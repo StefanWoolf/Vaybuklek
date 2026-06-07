@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from html import escape as _esc
 
 from ..container import AppContainer
 from ..domain.models import Task
@@ -42,15 +43,14 @@ async def run_reminders(c: AppContainer, *, today: date | None = None) -> int:
         chat_id = _target_chat(c, task)
         if not chat_id or c.bot is None:
             continue
-        mention = c.team.mention_for(task.assignee)
+        mention = c.team.mention_for(task.assignee)  # уже HTML-безопасно
         overdue = task.deadline and task.deadline < today
-        head = "⏰ *Просрочено!*" if overdue else "⏰ *Скоро дедлайн*"
-        dl = task.deadline.isoformat() if task.deadline else "—"
+        head = "⏰ <b>Просрочено!</b>" if overdue else "⏰ <b>Скоро дедлайн</b>"
+        dl = task.deadline_display() if task.deadline else "—"
         await c.bot.send_message(
             chat_id,
-            f"{head}\n📋 {task.title}\n👤 {mention} · 📅 до {dl}\n"
+            f"{head}\n📋 {_esc(task.title)}\n👤 {mention} · 📅 до {_esc(dl)}\n"
             f"Отметьте статус, когда будет готово.",
-            parse_mode="Markdown",
         )
         task.reminded_at = now
         sent += 1
@@ -76,6 +76,6 @@ async def run_evening_reconciliation(c: AppContainer, *, today: date | None = No
 
     for chat_id in chats:
         digest, _silent = c.reconciliation.evening_digest(chat_id, today=today)
-        await c.bot.send_message(chat_id, digest, parse_mode="Markdown")
+        await c.bot.send_message(chat_id, digest)
     log.info("Вечерняя сверка разослана в чатов: %d", len(chats))
     return len(chats)

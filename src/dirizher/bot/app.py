@@ -23,7 +23,7 @@ def build_dispatcher(container: AppContainer) -> Dispatcher:
 
 def build_bot(container: AppContainer) -> Bot:
     token = container.settings.telegram.bot_token
-    return Bot(token=token, default=DefaultBotProperties(parse_mode=None))
+    return Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))
 
 
 async def run_polling(container: AppContainer) -> None:

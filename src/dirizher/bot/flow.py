@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from html import escape as esc
+
 from aiogram import Bot
 
 from ..container import AppContainer
@@ -37,7 +39,7 @@ async def present(bot: Bot, c: AppContainer, processed: list[ProcessedTask], cha
                 merged = await c.service.merge_duplicate(p.duplicate_of, p.task.sources[0])
                 await bot.send_message(
                     chat_id,
-                    f"♻️ Объединил с существующей: «{merged.title}» (источники: "
+                    f"♻️ Объединил с существующей: «{esc(merged.title)}» (источники: "
                     f"{len(merged.sources)}).",
                 )
             else:
@@ -45,9 +47,7 @@ async def present(bot: Bot, c: AppContainer, processed: list[ProcessedTask], cha
         else:  # new
             if auto:
                 created = await c.service.create_on_board(p.task)
-                await bot.send_message(
-                    chat_id, tx.render_created(created), parse_mode="Markdown"
-                )
+                await bot.send_message(chat_id, tx.render_created(created))
                 await notify_workload(bot, c, created.assignee, chat_id)
             else:
                 await _ask_confirm(bot, c, p, chat_id)
@@ -67,14 +67,13 @@ async def _ask_confirm(bot: Bot, c: AppContainer, p: ProcessedTask, chat_id: int
     body = tx.render_processed(p)
     if unknown:
         body += (
-            f"\n\n⚠️ Я пока не знаю, кто такой «{unknown}». "
+            f"\n\n⚠️ Я пока не знаю, кто такой «{esc(unknown)}». "
             f"Пусть он нажмёт «👋 Это я», или поправьте исполнителя."
         )
     await bot.send_message(
         chat_id,
         body,
         reply_markup=kb.confirm_keyboard(pending.pid, claim_name=unknown),
-        parse_mode="Markdown",
     )
 
 
@@ -84,7 +83,6 @@ async def _ask_duplicate(bot: Bot, c: AppContainer, p: ProcessedTask, chat_id: i
         chat_id,
         tx.render_processed(p),
         reply_markup=kb.duplicate_keyboard(pending.pid),
-        parse_mode="Markdown",
     )
 
 
@@ -94,5 +92,4 @@ async def _ask_clarify(bot: Bot, c: AppContainer, p: ProcessedTask, chat_id: int
         chat_id,
         tx.render_processed(p),
         reply_markup=kb.clarify_keyboard(pending.pid),
-        parse_mode="Markdown",
     )

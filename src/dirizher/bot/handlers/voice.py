@@ -9,6 +9,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from html import escape as esc
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -38,9 +40,8 @@ async def on_voice(message: Message, c: AppContainer, state: FSMContext) -> None
     if c.transcriber.name == "mock":
         await message.answer(
             "🎙️ Распознавание речи — усиление (Этап 3) и сейчас выключено "
-            "(`DIRIZHER_AUDIO__ENABLED=false`). Продублируйте задачу текстом — "
-            "я её разберу.",
-            parse_mode="Markdown",
+            "(<code>DIRIZHER_AUDIO__ENABLED=false</code>). Продублируйте задачу "
+            "текстом — я её разберу."
         )
         return
 
@@ -60,14 +61,13 @@ async def on_voice(message: Message, c: AppContainer, state: FSMContext) -> None
         if pending:
             await c.service.apply_correction(pending.task, result.text)
             await message.answer(
-                f"🎙️ Услышал: «{result.text}»\n\n"
+                f"🎙️ Услышал: «{esc(result.text)}»\n\n"
                 + tx.render_task_card(pending.task, header="✏️ Поправленная задача"),
                 reply_markup=kb.confirm_keyboard(pending.pid),
-                parse_mode="Markdown",
             )
             return
 
-    await message.answer(f"🎙️ Распознал: «{result.text}»")
+    await message.answer(f"🎙️ Распознал: «{esc(result.text)}»")
     author = message.from_user.full_name if message.from_user else "—"
     c.history.add(message.chat.id, author, result.text)
     source = SourceRef(

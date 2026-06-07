@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from ..domain.enums import Priority
 from ..domain.models import ExtractedTask
@@ -72,6 +72,25 @@ def _parse_deadline(text: str, today: date) -> date | None:
     return None
 
 
+def _parse_time(text: str) -> time | None:
+    """Вытащить время суток: «в 19:00», «к 9 утра», «в 18», «в 18.30»."""
+    low = text.lower()
+    m = re.search(r"\b(\d{1,2})[:.](\d{2})\b", low)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return time(h, mi)
+    m = re.search(r"\b(?:в|к|на)\s+(\d{1,2})\s*(утра|вечера|дня|ночи|час\w*)?\b", low)
+    if m:
+        h = int(m.group(1))
+        part = m.group(2) or ""
+        if part.startswith(("вечера", "ночи")) and h < 12:
+            h += 12
+        if 0 <= h <= 23:
+            return time(h, 0)
+    return None
+
+
 def _detect_priority(text: str) -> Priority:
     low = text.lower()
     if any(k in low for k in _LOW):
@@ -126,6 +145,9 @@ def _clean_title(text: str, deadline_present: bool) -> str:
     )
     t = re.sub(rf"\s*{deadline_phrase}\b\.?\s*$", "", t, flags=re.IGNORECASE)  # хвост
     t = re.sub(rf"^{deadline_phrase}\b[\s,]*", "", t, flags=re.IGNORECASE)      # начало
+    # время суток («в 20:00», «к 9 утра», «в 18»)
+    t = re.sub(r"\s*(в|к|на)?\s*\b\d{1,2}[:.]\d{2}\b", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s*(в|к|на)\s+\d{1,2}\s*(утра|вечера|дня|ночи|час\w*)\b", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s{2,}", " ", t).strip(" \t\n.,—-")
     return t[:1].upper() + t[1:] if t else text.strip()
 
@@ -156,6 +178,7 @@ class MockLLMProvider:
                 continue
             assignee, rest = _match_assignee(clause, context)
             deadline = _parse_deadline(clause, context.today)
+            tm = _parse_time(clause)
             priority = _detect_priority(clause)
             title = _clean_title(rest, deadline is not None)
             if not title:
@@ -173,6 +196,7 @@ class MockLLMProvider:
                     task=title,
                     assignee=assignee.lstrip("@") if assignee else None,
                     deadline=deadline,
+                    deadline_time=tm,
                     priority=priority,
                     confidence=round(confidence, 2),
                 )

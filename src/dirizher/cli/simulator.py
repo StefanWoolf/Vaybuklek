@@ -43,8 +43,16 @@ HELP = """\
 """
 
 
+def _plain(s: str) -> str:
+    """Убрать HTML-теги/сущности для вывода в консоль."""
+    import html
+    import re
+
+    return html.unescape(re.sub(r"<[^>]+>", "", s))
+
+
 def _print_card(task) -> None:
-    print("\n" + tx.render_task_card(task).replace("*", ""))
+    print("\n" + _plain(tx.render_task_card(task)))
 
 
 async def _handle_processed(c: AppContainer, processed, chat_id: int) -> None:
@@ -114,7 +122,7 @@ async def main() -> None:
             continue
         if line == "/board":
             cards = await c.board.list_cards()
-            print(tx.render_board(cards).replace("*", ""))
+            print(_plain(tx.render_board(cards)))
             continue
         if line == "/team":
             for m in c.team.all():

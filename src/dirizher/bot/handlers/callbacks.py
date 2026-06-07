@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from html import escape as esc
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -20,7 +22,7 @@ log = get_logger("dirizher.bot.callbacks")
 
 async def _finish(cb: CallbackQuery, text: str) -> None:
     if isinstance(cb.message, Message):
-        await cb.message.edit_text(text, parse_mode="Markdown")
+        await cb.message.edit_text(text)
     await cb.answer()
 
 
@@ -43,7 +45,7 @@ async def on_confirm(cb: CallbackQuery, callback_data: ConfirmCD, c: AppContaine
 
     elif action == "reject":
         c.pending.pop(pid)
-        await _finish(cb, f"❌ Отклонено: «{pending.task.title}»")
+        await _finish(cb, f"❌ Отклонено: «{esc(pending.task.title)}»")
 
     elif action == "edit":
         await state.set_state(EditTask.waiting_correction)
@@ -59,7 +61,7 @@ async def on_confirm(cb: CallbackQuery, callback_data: ConfirmCD, c: AppContaine
         existing = c.repo.get(pending.duplicate_of_id or "")
         if existing:
             merged = await c.service.merge_duplicate(existing, pending.source)
-            await _finish(cb, f"🔗 Объединил с «{merged.title}». Источников: {len(merged.sources)}.")
+            await _finish(cb, f"🔗 Объединил с «{esc(merged.title)}». Источников: {len(merged.sources)}.")
         else:
             created = await c.service.create_on_board(pending.task)
             await _finish(cb, tx.render_created(created))
@@ -93,7 +95,6 @@ async def on_correction(message: Message, c: AppContainer, state: FSMContext) ->
     await message.answer(
         "Переформулировал:\n\n" + tx.render_task_card(pending.task, header="✏️ Поправленная задача"),
         reply_markup=kb.confirm_keyboard(pending.pid),
-        parse_mode="Markdown",
     )
 
 

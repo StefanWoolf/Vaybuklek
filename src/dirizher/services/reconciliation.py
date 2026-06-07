@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from html import escape as _esc
 
 from ..domain.enums import TaskStatus
 from ..logging_setup import get_logger
@@ -89,7 +90,7 @@ class ReconciliationService:
         for t in open_tasks:
             by_assignee.setdefault((t.assignee or "—"), []).append(t)
 
-        lines = [f"🌙 *Вечерняя сверка* · {today.isoformat()}", ""]
+        lines = [f"🌙 <b>Вечерняя сверка</b> · {today.isoformat()}", ""]
         if not open_tasks:
             lines.append("Открытых задач нет — отличная работа! 🎉")
             return "\n".join(lines), []
@@ -98,10 +99,9 @@ class ReconciliationService:
         for assignee, tasks in sorted(by_assignee.items()):
             key = assignee.lstrip("@").lower()
             mark = "✅ отчитался" if key in reported else "🔕 нет отчёта"
-            lines.append(f"*{assignee}* — {len(tasks)} откр. задач — {mark}")
+            lines.append(f"<b>{_esc(assignee)}</b> — {len(tasks)} откр. задач — {mark}")
             for t in tasks:
-                dl = t.deadline.isoformat() if t.deadline else "без срока"
-                lines.append(f"  • [{t.status.label_ru}] {t.title} (до {dl})")
+                lines.append(f"  • [{t.status.label_ru}] {_esc(t.title)} (до {_esc(t.deadline_display())})")
             if key not in reported and assignee != "—":
                 silent.append(self.team.mention_for(assignee))
             lines.append("")

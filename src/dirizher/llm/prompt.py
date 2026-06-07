@@ -25,13 +25,16 @@ SYSTEM_PROMPT = """\
 - deadline: дата в формате YYYY-MM-DD. Относительные сроки («к четвергу»,
   «завтра», «до конца недели») переводи в дату относительно today из контекста.
   Если срока нет — null.
+- time: время суток в формате HH:MM, если в тексте/переписке есть конкретное
+  время («в 20:00», «к 9 утра», «созвон в 18»). Если времени нет — null.
 - priority: high | medium | low. «срочно», «горит», «asap» => high.
 - requirements: краткие детали/критерии, если есть, иначе null.
 
 Формат ответа строго такой:
 {"tasks": [
   {"task": "...", "assignee": "...|null", "deadline": "YYYY-MM-DD|null",
-   "priority": "high|medium|low", "confidence": 0.0, "requirements": "...|null"}
+   "time": "HH:MM|null", "priority": "high|medium|low",
+   "confidence": 0.0, "requirements": "...|null"}
 ]}
 """
 

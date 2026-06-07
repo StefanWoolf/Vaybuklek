@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
+from html import escape as _esc
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -33,6 +34,7 @@ class ExtractedTask(BaseModel):
     task: str = Field(..., description="Краткая формулировка задачи")
     assignee: str | None = Field(None, description="Имя/username исполнителя или null")
     deadline: date | None = Field(None, description="Дедлайн в формате YYYY-MM-DD или null")
+    deadline_time: time | None = Field(None, description="Время суток HH:MM, если указано, иначе null")
     priority: Priority = Priority.medium
     confidence: float = Field(..., ge=0.0, le=1.0)
     requirements: str | None = Field(None, description="Доп. детали/критерии (необязательно)")
@@ -57,11 +59,13 @@ class TeamMember(BaseModel):
     voice_registered: bool = False
 
     def mention(self) -> str:
+        """HTML-упоминание (бот работает в parse_mode=HTML)."""
         if self.username:
             return f"@{self.username}"
         if self.user_id:
-            return f"[{self.full_name or 'участник'}](tg://user?id={self.user_id})"
-        return self.full_name or "участник"
+            name = _esc(self.full_name or "участник")
+            return f'<a href="tg://user?id={self.user_id}">{name}</a>'
+        return _esc(self.full_name or "участник")
 
 
 class SourceRef(BaseModel):
@@ -82,6 +86,7 @@ class Task(BaseModel):
     requirements: str | None = None
     assignee: str | None = None
     deadline: date | None = None
+    deadline_time: time | None = None  # время суток, если указано
     priority: Priority = Priority.medium
     status: TaskStatus = TaskStatus.todo
 
@@ -100,10 +105,21 @@ class Task(BaseModel):
             requirements=ex.requirements,
             assignee=ex.assignee,
             deadline=ex.deadline,
+            deadline_time=ex.deadline_time,
             priority=ex.priority,
             confidence=ex.confidence,
             sources=[source],
         )
+
+    def deadline_display(self) -> str:
+        """Человекочитаемый дедлайн с днём недели и временем (если есть)."""
+        if not self.deadline:
+            return "без срока"
+        wd = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        out = f"{self.deadline.isoformat()} ({wd[self.deadline.weekday()]})"
+        if self.deadline_time:
+            out += f" в {self.deadline_time.strftime('%H:%M')}"
+        return out
 
     def dedup_text(self) -> str:
         """Текст для векторного поиска дублей."""

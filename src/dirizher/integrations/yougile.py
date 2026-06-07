@@ -22,12 +22,16 @@ from ..logging_setup import get_logger
 log = get_logger("dirizher.yougile")
 
 
-def _deadline_obj(d: date) -> dict:
-    """YouGile API v2 ждёт дедлайн как объект с timestamp в миллисекундах."""
+def _deadline_obj(d: date, t=None) -> dict:
+    """YouGile API v2 ждёт дедлайн как объект с timestamp в миллисекундах.
+
+    Если задано время суток (t: datetime.time) — ставим withTime=true.
+    """
     from datetime import datetime
 
-    ms = int(datetime(d.year, d.month, d.day, 12, 0).timestamp() * 1000)
-    return {"deadline": ms, "withTime": False}
+    hour, minute, with_time = (t.hour, t.minute, True) if t else (12, 0, False)
+    ms = int(datetime(d.year, d.month, d.day, hour, minute).timestamp() * 1000)
+    return {"deadline": ms, "withTime": with_time}
 
 
 @dataclass
@@ -126,7 +130,7 @@ class YouGileBoard:
         if task.requirements:
             payload["description"] = task.requirements
         if task.deadline:
-            payload["deadline"] = _deadline_obj(task.deadline)
+            payload["deadline"] = _deadline_obj(task.deadline, task.deadline_time)
         r = await self._http.post("/tasks", json=payload)
         r.raise_for_status()
         card_id = r.json().get("id", "")
@@ -152,7 +156,7 @@ class YouGileBoard:
         if task.requirements:
             body["description"] = task.requirements
         if task.deadline:
-            body["deadline"] = _deadline_obj(task.deadline)
+            body["deadline"] = _deadline_obj(task.deadline, task.deadline_time)
         col = self._columns.get(task.status)
         if col:
             body["columnId"] = col
