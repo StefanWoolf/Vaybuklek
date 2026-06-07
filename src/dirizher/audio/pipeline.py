@@ -1,13 +1,15 @@
-"""Боевой пайплайн распознавания речи: noisereduce → pyannote → Whisper.
+"""Боевой пайплайн распознавания речи из Telegram.
 
-Тяжёлые зависимости (faster-whisper, noisereduce, pyannote, soundfile, numpy)
-импортируются лениво и нужны только при DIRIZHER_AUDIO__ENABLED=true
-(extra-зависимости `audio`). Без них система работает через MockTranscriber.
+Поток:
+Telegram .oga/.mp4/.ogg -> ffmpeg -> wav 16 kHz mono -> noisereduce -> faster-whisper.
+Диаризация через pyannote остаётся опциональной: если HF-токена нет, работаем без неё.
 """
 
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -26,13 +28,47 @@ class WhisperPipeline:
         self._model = None
         self._diarizer = None
 
-    # ── ленивая инициализация моделей ────────────────────────────────────────
+    async def transcribe(self, file_path: str) -> TranscriptResult:
+        return await asyncio.to_thread(self._transcribe_sync, file_path)
+
+    def _transcribe_sync(self, file_path: str) -> TranscriptResult:
+        created_files: list[str] = []
+
+        try:
+            wav_path = self._to_wav(file_path, created_files)
+            clean_path = self._denoise(wav_path, created_files)
+
+            segments = self._whisper_segments(clean_path)
+            diar = self._diarize(clean_path)
+
+            if diar:
+                for seg in segments:
+                    seg.speaker = self._speaker_at(diar, seg)
+
+            text = " ".join(s.text for s in segments).strip()
+            return TranscriptResult(text=text, segments=segments, is_mock=False)
+
+        finally:
+            for path in created_files:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    # ── модели ───────────────────────────────────────────────────────────────
+
     def _ensure_model(self):
         if self._model is None:
             from faster_whisper import WhisperModel
 
-            log.info("Загружаю Whisper (%s)…", self._cfg.whisper_model)
-            self._model = WhisperModel(self._cfg.whisper_model, device="auto", compute_type="int8")
+            log.info("Загружаю Whisper-модель: %s", self._cfg.whisper_model)
+
+            self._model = WhisperModel(
+                self._cfg.whisper_model,
+                device="cpu",
+                compute_type="int8",
+            )
+
         return self._model
 
     def _ensure_diarizer(self):
@@ -40,77 +76,167 @@ class WhisperPipeline:
             try:
                 from pyannote.audio import Pipeline
 
-                log.info("Загружаю pyannote 3.1 (диаризация)…")
+                log.info("Загружаю pyannote для диаризации")
                 self._diarizer = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1", use_auth_token=self._cfg.hf_token
+                    "pyannote/speaker-diarization-3.1",
+                    use_auth_token=self._cfg.hf_token,
                 )
-            except Exception as e:  # noqa: BLE001
-                log.warning("Диаризация недоступна (%s) — продолжаю без неё", e)
+            except Exception as e:
+                log.warning("Диаризация недоступна: %s", e)
+                self._diarizer = None
+
         return self._diarizer
 
-    # ── публичный API ────────────────────────────────────────────────────────
-    async def transcribe(self, file_path: str) -> TranscriptResult:
-        return await asyncio.to_thread(self._transcribe_sync, file_path)
+    # ── подготовка аудио ─────────────────────────────────────────────────────
 
-    def _transcribe_sync(self, file_path: str) -> TranscriptResult:
-        clean_path = self._denoise(file_path)
-        segments = self._whisper_segments(clean_path)
-        diar = self._diarize(clean_path)
-        if diar:
-            for seg in segments:
-                seg.speaker = self._speaker_at(diar, seg)
-        text = " ".join(s.text for s in segments).strip()
-        return TranscriptResult(text=text, segments=segments, is_mock=False)
+    def _to_wav(self, file_path: str, created_files: list[str]) -> str:
+        """Конвертирует Telegram voice/video_note в WAV.
 
-    # ── шаги пайплайна ───────────────────────────────────────────────────────
-    def _denoise(self, file_path: str) -> str:
-        """Шумоподавление перед транскрипцией (+качество, см. отчёт 3.1)."""
+        Telegram voice обычно приходит как .oga/.ogg с Opus.
+        video_note приходит как .mp4.
+        Whisper это часто умеет читать сам, но WAV надёжнее для noisereduce.
+        """
+
+        src = Path(file_path)
+
+        if src.suffix.lower() == ".wav":
+            return str(src)
+
+        if shutil.which("ffmpeg") is None:
+            log.warning(
+                "ffmpeg не найден в PATH, пробую отдать файл в Whisper как есть")
+            return str(src)
+
+        out = Path(tempfile.gettempdir()) / f"dirizher_audio_{src.stem}.wav"
+        created_files.append(str(out))
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(src),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-vn",
+            str(out),
+        ]
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            log.warning("ffmpeg не смог конвертировать файл: %s",
+                        result.stderr[-1000:])
+            return str(src)
+
+        return str(out)
+
+    def _denoise(self, file_path: str, created_files: list[str]) -> str:
+        """Безопасное шумоподавление.
+
+        Если noisereduce/soundfile не смогли обработать файл — просто продолжаем
+        без шумоподавления.
+        """
+
         try:
             import noisereduce as nr
             import soundfile as sf
 
             data, rate = sf.read(file_path)
+
+            if len(data) == 0:
+                return file_path
+
             reduced = nr.reduce_noise(y=data, sr=rate)
-            out = str(Path(tempfile.gettempdir()) / f"dz_clean_{Path(file_path).stem}.wav")
+
+            out = Path(tempfile.gettempdir()) / \
+                f"dirizher_clean_{Path(file_path).stem}.wav"
+            created_files.append(str(out))
+
             sf.write(out, reduced, rate)
-            return out
-        except Exception as e:  # noqa: BLE001
-            log.warning("Шумоподавление пропущено (%s)", e)
+            return str(out)
+
+        except Exception as e:
+            log.warning("Шумоподавление пропущено: %s", e)
             return file_path
 
-    def _whisper_segments(self, file_path: str) -> list:
+    # ── распознавание ────────────────────────────────────────────────────────
+
+    def _whisper_segments(self, file_path: str) -> list["_TimedSegment"]:
         model = self._ensure_model()
-        raw_segments, _info = model.transcribe(file_path, language="ru", vad_filter=True)
-        result = []
+
+        raw_segments, _info = model.transcribe(
+            file_path,
+            language="ru",
+            vad_filter=True,
+            beam_size=5,
+        )
+
+        result: list[_TimedSegment] = []
+
         for s in raw_segments:
-            result.append(_TimedSegment(start=s.start, end=s.end, text=s.text.strip()))
+            text = s.text.strip()
+            if text:
+                result.append(
+                    _TimedSegment(
+                        start=s.start,
+                        end=s.end,
+                        text=text,
+                    )
+                )
+
         return result
+
+    # ── опциональная диаризация ──────────────────────────────────────────────
 
     def _diarize(self, file_path: str):
         diarizer = self._ensure_diarizer()
+
         if diarizer is None:
             return None
-        annotation = diarizer(file_path)
-        turns = []
-        for turn, _track, speaker in annotation.itertracks(yield_label=True):
-            turns.append((turn.start, turn.end, speaker))
-        return turns
+
+        try:
+            annotation = diarizer(file_path)
+
+            turns = []
+            for turn, _track, speaker in annotation.itertracks(yield_label=True):
+                turns.append((turn.start, turn.end, speaker))
+
+            return turns
+
+        except Exception as e:
+            log.warning("Диаризация пропущена: %s", e)
+            return None
 
     @staticmethod
     def _speaker_at(turns, seg) -> str:
-        """Спикер с максимальным временным перекрытием для сегмента."""
-        best, best_ov = "Speaker_1", 0.0
+        best_speaker = "Speaker_1"
+        best_overlap = 0.0
+
         for start, end, speaker in turns:
-            ov = max(0.0, min(seg.end, end) - max(seg.start, start))
-            if ov > best_ov:
-                best, best_ov = speaker, ov
-        return best
+            overlap = max(0.0, min(seg.end, end) - max(seg.start, start))
+
+            if overlap > best_overlap:
+                best_speaker = speaker
+                best_overlap = overlap
+
+        return best_speaker
 
 
 class _TimedSegment(Segment):
-    """Сегмент с таймкодами (наследует speaker/text)."""
-
-    def __init__(self, start: float, end: float, text: str, speaker: str = "Speaker_1") -> None:
+    def __init__(
+        self,
+        start: float,
+        end: float,
+        text: str,
+        speaker: str = "Speaker_1",
+    ) -> None:
         super().__init__(speaker=speaker, text=text)
         self.start = start
         self.end = end
