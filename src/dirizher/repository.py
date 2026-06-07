@@ -71,6 +71,8 @@ class TeamRegistry:
             if existing:
                 existing.username = member.username or existing.username
                 existing.full_name = member.full_name or existing.full_name
+                existing.email = member.email or existing.email
+                existing.yougile_id = member.yougile_id or existing.yougile_id
                 for a in member.aliases:
                     if a not in existing.aliases:
                         existing.aliases.append(a)
@@ -83,20 +85,26 @@ class TeamRegistry:
     def all(self) -> list[TeamMember]:
         return list(self._by_id.values()) + self._anon
 
+    @staticmethod
+    def _candidates(m: TeamMember) -> list[str]:
+        cands = [m.username or "", m.full_name, *m.aliases]
+        if m.full_name:
+            cands.append(m.full_name.split()[0])  # имя без фамилии
+        return [c.lower() for c in cands if c]
+
     def resolve(self, name: str | None) -> TeamMember | None:
-        """Найти участника по username/имени/алиасу (регистронезависимо)."""
+        """Найти участника по username/имени/алиасу (регистронезависимо). Первый матч."""
+        matches = self.resolve_all(name)
+        return matches[0] if matches else None
+
+    def resolve_all(self, name: str | None) -> list[TeamMember]:
+        """Все участники, подходящие под имя/алиас (для разрешения тёзок, #6)."""
         if not name:
-            return None
+            return []
         key = name.lstrip("@").strip().lower()
         if not key:
-            return None
-        for m in self.all():
-            candidates = [m.username or "", m.full_name, *m.aliases]
-            first_name = m.full_name.split()[0] if m.full_name else ""
-            candidates.append(first_name)
-            if any(c and c.lower() == key for c in candidates):
-                return m
-        return None
+            return []
+        return [m for m in self.all() if key in self._candidates(m)]
 
     def mention_for(self, name: str | None) -> str:
         """Готовая @-упоминалка для исполнителя (или просто текстом)."""

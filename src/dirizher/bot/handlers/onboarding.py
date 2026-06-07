@@ -8,10 +8,12 @@
 
 from __future__ import annotations
 
+import re
 from html import escape as esc
 
 from aiogram import F, Router
 from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER, ADMINISTRATOR
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from ...container import AppContainer
@@ -20,9 +22,20 @@ from ...logging_setup import get_logger
 from .. import keyboards as kb
 from .. import text as tx
 from ..callback_data import IntroCD
+from ..states import Introduce
 
 router = Router(name="onboarding")
 log = get_logger("dirizher.bot.onboarding")
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+ASK_DETAILS = (
+    "Давай знакомиться 👋\n"
+    "Пришли одним сообщением <b>email, привязанный к доске YouGile</b>, и через "
+    "запятую свои <b>прозвища</b> (как тебя зовут в чате).\n\n"
+    "Пример: <code>andrey@mail.ru; Энди, Андрюша, Андрей Скрипа</code>\n"
+    "Если прозвищ нет — пришли просто email."
+)
 
 GREETING = (
     "🎼 <b>Всем привет! Я Дирижёр</b> — ваш AI-проджект-менеджер.\n\n"
@@ -66,17 +79,74 @@ async def on_new_members(message: Message, c: AppContainer) -> None:
         )
 
 
-# ── «Представиться» (за себя) ────────────────────────────────────────────────
+# ── «Представиться» (за себя) → спрашиваем email и прозвища ──────────────────
 @router.callback_query(IntroCD.filter(F.action == "self"))
-async def on_introduce_self(cb: CallbackQuery, c: AppContainer) -> None:
+async def on_introduce_self(cb: CallbackQuery, c: AppContainer, state: FSMContext) -> None:
     u = cb.from_user
+    # базовую личность фиксируем сразу, детали (email/прозвища) — следующим сообщением
     c.team.register(TeamMember(user_id=u.id, username=u.username, full_name=u.full_name))
-    handle = f"@{u.username}" if u.username else u.full_name
-    await cb.answer(f"Готово, записал: {handle}")
+    await state.set_state(Introduce.waiting_details)
+    await cb.answer()
     if isinstance(cb.message, Message):
-        await cb.message.answer(
-            f"✅ Знаком: <b>{esc(u.full_name)}</b>" + (f" (@{esc(u.username)})" if u.username else "")
-        )
+        await cb.message.answer(ASK_DETAILS)
+
+
+def _parse_details(text: str) -> tuple[str | None, list[str]]:
+    """Из «email; Энди, Андрюша» вернуть (email, [прозвища])."""
+    em = _EMAIL_RE.search(text)
+    email = em.group(0) if em else None
+    rest = (text[: em.start()] + " " + text[em.end():]) if em else text
+    parts = [a.strip(" \t.;") for a in re.split(r"[;,\n]", rest)]
+    aliases = [a for a in parts if a and "@" not in a]
+    return email, aliases
+
+
+@router.message(Introduce.waiting_details)
+async def on_details(message: Message, c: AppContainer, state: FSMContext) -> None:
+    u = message.from_user
+    email, aliases = _parse_details(message.text or "")
+    if not email:
+        await message.answer("Не вижу email 🤔 Пришли адрес, привязанный к доске YouGile.")
+        return  # остаёмся в состоянии, ждём корректный ввод
+
+    await state.clear()
+    member = c.team.register(
+        TeamMember(user_id=u.id, username=u.username, full_name=u.full_name,
+                   aliases=aliases, email=email)
+    )
+
+    # Привязка к реальному пользователю доски YouGile по email
+    bound = ""
+    try:
+        found = await c.board.find_user_by_email(email)
+    except Exception:  # noqa: BLE001
+        found = None
+    if found:
+        member.yougile_id, yg_name = found
+        bound = f"\n🔗 Привязал к пользователю доски: <b>{esc(yg_name)}</b>"
+    elif not c.settings.yougile.is_mock:
+        bound = ("\n⚠️ На доске нет пользователя с таким email — задачи будут "
+                 "назначаться по имени. Проверь адрес или пригласи его на доску.")
+
+    # перепривязываем уже открытые задачи, где исполнитель совпал с прозвищем
+    handle = member.username or member.full_name
+    repointed = 0
+    keys = {a.lower() for a in aliases} | {(member.full_name or "").lower()}
+    for t in c.repo.open():
+        if t.assignee and t.assignee.lstrip("@").lower() in keys:
+            t.assignee = handle
+            if member.yougile_id:
+                t.assignee_yougile_id = member.yougile_id
+            t.touch()
+            repointed += 1
+
+    alias_str = ", ".join(aliases) if aliases else "—"
+    suffix = f"\nПереназначил задач: {repointed}." if repointed else ""
+    await message.answer(
+        f"✅ Знаком: <b>{esc(member.full_name)}</b>"
+        + (f" (@{esc(member.username)})" if member.username else "")
+        + f"\n📧 {esc(email)}\n🏷️ Прозвища: {esc(alias_str)}{bound}{suffix}"
+    )
 
 
 # ── «Это я (Имя)» — закрепить неизвестного исполнителя ───────────────────────

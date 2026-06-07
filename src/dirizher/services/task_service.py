@@ -129,6 +129,10 @@ class TaskService:
     async def create_on_board(self, task: Task) -> Task:
         """Создать карточку на доске и зафиксировать задачу в памяти."""
         task.status = TaskStatus.todo
+        # назначить карточку на реального пользователя YouGile, если он привязан
+        member = self.team.resolve(task.assignee)
+        if member and member.yougile_id:
+            task.assignee_yougile_id = member.yougile_id
         card_id = await self.board.create_card(task)
         task.board_card_id = card_id
         task.touch()

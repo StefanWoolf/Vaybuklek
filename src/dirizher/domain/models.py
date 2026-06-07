@@ -56,6 +56,8 @@ class TeamMember(BaseModel):
     username: str | None = None  # без ведущего @
     full_name: str = ""
     aliases: list[str] = Field(default_factory=list)
+    email: str | None = None          # email, привязанный к доске YouGile
+    yougile_id: str | None = None     # id пользователя на доске YouGile
     voice_registered: bool = False
 
     def mention(self) -> str:
@@ -85,6 +87,7 @@ class Task(BaseModel):
     title: str
     requirements: str | None = None
     assignee: str | None = None
+    assignee_yougile_id: str | None = None  # id пользователя YouGile для назначения
     deadline: date | None = None
     deadline_time: time | None = None  # время суток, если указано
     priority: Priority = Priority.medium

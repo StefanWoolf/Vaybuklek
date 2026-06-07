@@ -53,6 +53,7 @@ class BoardClient(Protocol):
     async def complete_card(self, card_id: str) -> None: ...
     async def update_card(self, card_id: str, task: Task) -> None: ...
     async def delete_card(self, card_id: str) -> None: ...
+    async def find_user_by_email(self, email: str) -> tuple[str, str] | None: ...
     async def list_cards(self) -> list[BoardCard]: ...
     async def close(self) -> None: ...
 
@@ -102,6 +103,10 @@ class MockBoard:
         if self._cards.pop(card_id, None):
             log.info("🗑️  [mock] карточка #%s удалена", card_id)
 
+    async def find_user_by_email(self, email: str) -> tuple[str, str] | None:
+        # mock-доска без реальных пользователей — привязки нет
+        return None
+
     async def list_cards(self) -> list[BoardCard]:
         return list(self._cards.values())
 
@@ -136,6 +141,8 @@ class YouGileBoard:
             payload["description"] = task.requirements
         if task.deadline:
             payload["deadline"] = _deadline_obj(task.deadline, task.deadline_time)
+        if task.assignee_yougile_id:
+            payload["assigned"] = [task.assignee_yougile_id]
         r = await self._http.post("/tasks", json=payload)
         r.raise_for_status()
         card_id = r.json().get("id", "")
@@ -165,12 +172,29 @@ class YouGileBoard:
         col = self._columns.get(task.status)
         if col:
             body["columnId"] = col
+        if task.assignee_yougile_id:
+            body["assigned"] = [task.assignee_yougile_id]
         r = await self._http.put(f"/tasks/{card_id}", json=body)
         r.raise_for_status()
 
     async def delete_card(self, card_id: str) -> None:
         r = await self._http.put(f"/tasks/{card_id}", json={"deleted": True})
         r.raise_for_status()
+
+    async def find_user_by_email(self, email: str) -> tuple[str, str] | None:
+        """Найти пользователя доски по email → (id, имя). Иначе None."""
+        target = email.strip().lower()
+        try:
+            r = await self._http.get("/users", params={"limit": 1000})
+            r.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            log.warning("YouGile /users недоступен: %s", e)
+            return None
+        for u in r.json().get("content", []):
+            if (u.get("email") or "").strip().lower() == target:
+                name = u.get("realName") or u.get("name") or email
+                return u.get("id", ""), name
+        return None
 
     async def list_cards(self) -> list[BoardCard]:
         r = await self._http.get("/tasks", params={"limit": 1000})
