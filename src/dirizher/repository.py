@@ -23,6 +23,15 @@ class TaskRepository:
     def get(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
 
+    def get_by_card(self, card_id: str) -> Task | None:
+        for t in self._tasks.values():
+            if t.board_card_id == card_id:
+                return t
+        return None
+
+    def last_created(self) -> Task | None:
+        return max(self._tasks.values(), key=lambda t: t.created_at, default=None)
+
     def all(self) -> list[Task]:
         return list(self._tasks.values())
 

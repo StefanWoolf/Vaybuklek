@@ -14,6 +14,7 @@ from ...container import AppContainer
 from ...domain.enums import TaskSource
 from ...domain.models import SourceRef, TeamMember
 from ...logging_setup import get_logger
+from .. import task_commands
 from ..flow import present
 
 router = Router(name="messages")
@@ -49,6 +50,12 @@ async def on_text(message: Message, c: AppContainer, state: FSMContext) -> None:
     chat_id = message.chat.id
     # пополняем историю чата ДО извлечения (сообщение войдёт в контекст)
     c.history.add(chat_id, _author(user), text)
+
+    # Команда над существующей задачей (закрой/в работу/удали) — раньше извлечения
+    cmd = task_commands.detect(text)
+    if cmd is not None:
+        await task_commands.handle(message, c, cmd)
+        return
 
     source = SourceRef(
         source=TaskSource.chat,

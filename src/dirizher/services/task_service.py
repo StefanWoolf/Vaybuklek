@@ -23,6 +23,20 @@ from ..repository import TaskRepository, TeamRegistry
 
 log = get_logger("dirizher.service")
 
+import re as _re
+
+_ASSIGNEE_SPLIT = _re.compile(r"\s*(?:,|;|/|&|\bи\b|\band\b)\s*", _re.IGNORECASE)
+
+
+def _split_assignees(name: str | None) -> list[str]:
+    """«Данила и Андрей» → ['Данила', 'Андрей']. Один @username не дробим."""
+    if not name or not name.strip():
+        return []
+    if name.startswith("@") and " " not in name:
+        return [name]
+    parts = [p.strip() for p in _ASSIGNEE_SPLIT.split(name) if p.strip()]
+    return parts or [name.strip()]
+
 
 class Outcome(str, Enum):
     new = "new"                      # новая задача -> на подтверждение/создание
@@ -76,26 +90,39 @@ class TaskService:
         extracted = await self.provider.extract_tasks(text, ctx)
         log.info("Извлечено задач: %d (источник=%s)", len(extracted), source.source.value)
 
+        thr = self.settings.llm.confidence_threshold
+        ignore = self.settings.llm.ignore_threshold
+
         processed: list[ProcessedTask] = []
         for ex in extracted:
-            task = Task.from_extracted(ex, source)
-            # нормализуем исполнителя к каноническому имени/username команды
-            member = self.team.resolve(task.assignee)
-            if member:
-                task.assignee = member.username or member.full_name or task.assignee
-
-            if ex.confidence < self.settings.llm.confidence_threshold:
-                processed.append(ProcessedTask(task, Outcome.low_confidence))
+            # Порог тишины: совсем неуверенные — молча игнорируем (анти-спам).
+            if ex.confidence < ignore:
+                log.info("Пропуск (conf=%.2f < %.2f): %s", ex.confidence, ignore, ex.task)
                 continue
+            low_conf = ex.confidence < thr
 
-            dup = self.memory.find_duplicate(task.dedup_text())
-            existing = self.repo.get(dup.task_id) if dup else None
-            if existing:
-                processed.append(
-                    ProcessedTask(task, Outcome.duplicate, duplicate_of=existing, dup_score=dup.score)
-                )
-            else:
-                processed.append(ProcessedTask(task, Outcome.new))
+            # Мульти-исполнители: «Данила и Андрей» → отдельная карточка каждому.
+            assignees = _split_assignees(ex.assignee) or [None]
+            for who in assignees:
+                task = Task.from_extracted(ex, source)
+                task.assignee = who
+                member = self.team.resolve(task.assignee)
+                if member:
+                    task.assignee = member.username or member.full_name or task.assignee
+
+                if low_conf:
+                    processed.append(ProcessedTask(task, Outcome.low_confidence))
+                    continue
+
+                dup = self.memory.find_duplicate(task.dedup_text())
+                existing = self.repo.get(dup.task_id) if dup else None
+                # дубль засчитываем только при совпадении исполнителя
+                if existing and (existing.assignee or "").lower() == (task.assignee or "").lower():
+                    processed.append(
+                        ProcessedTask(task, Outcome.duplicate, duplicate_of=existing, dup_score=dup.score)
+                    )
+                else:
+                    processed.append(ProcessedTask(task, Outcome.new))
         return processed
 
     # ── Применение решений ───────────────────────────────────────────────────
@@ -133,8 +160,9 @@ class TaskService:
     async def apply_correction(self, task: Task, correction: str, *, today: date | None = None) -> Task:
         """Применить уточнение пользователя к задаче «в полёте» (до отправки).
 
-        Гибрид: детерминированно вытаскиваем срок/приоритет/исполнителя из текста
-        правки, плюс пробуем LLM-извлечение для новой формулировки заголовка.
+        Меняем ТОЛЬКО то, что попросили: срок/время/приоритет/исполнителя.
+        Заголовок НЕ перезаписываем (иначе «повысь приоритет» затирало название),
+        кроме явного переименования: «назови…», «переименуй…», «название: …».
         """
         from ..llm import mock_provider as mp  # переиспользуем эвристики
 
@@ -146,15 +174,18 @@ class TaskService:
         if dl:
             task.deadline = dl
             changed = True
+        tm = mp._parse_time(correction)
+        if tm:
+            task.deadline_time = tm
+            changed = True
 
-        # Приоритет: абсолютные и относительные формулировки.
-        # Понижение проверяем первым, чтобы «не срочно» не попало в повышение.
+        # Приоритет: понижение проверяем первым, чтобы «не срочно» не попало в повышение.
         lower_kw = ("не срочн", "понизь", "пониже", "снизь", "пониз", "ниже", "меньше", "неважн")
-        raise_kw = ("повыси", "подними", "поднять", "приоритетн", "важнее", "выше", "больше")
+        raise_kw = ("повыси", "подними", "поднять", "приоритетн", "важнее", "выше", "срочн", "asap", "горит")
         if any(k in low for k in lower_kw):
             task.priority = task.priority.__class__.low
             changed = True
-        elif any(k in low for k in mp._HIGH) or any(k in low for k in raise_kw):
+        elif any(k in low for k in raise_kw):
             task.priority = task.priority.__class__.high
             changed = True
 
@@ -165,25 +196,27 @@ class TaskService:
             task.assignee = (member.username or member.full_name) if member else assignee.lstrip("@")
             changed = True
 
-        # Переформулировать заголовок через LLM — только если правка похожа на
-        # новую формулировку задачи (есть глагол-триггер). Иначе «приоритет меньше»
-        # не должен перезаписывать название.
-        if mp._looks_like_task(correction):
-            extracted = await self.provider.extract_tasks(correction, ctx)
-            if extracted:
-                ex = extracted[0]
-                task.title = ex.task
-                if ex.requirements:
-                    task.requirements = ex.requirements
-                changed = True
+        # Явное переименование — только по чёткому маркеру.
+        m = _re.search(
+            r"(?:назови|переименуй|название[:\s]|заголовок[:\s]|перепиши(?:\s+задачу)?\s+как)[:\s]*(.+)",
+            correction, _re.IGNORECASE,
+        )
+        if m and m.group(1).strip():
+            new_title = m.group(1).strip(" .,:;«»\"'")
+            task.title = new_title[:1].upper() + new_title[1:]
+            changed = True
 
         if not changed:
-            # Никакое поле не распозналось — трактуем правку как уточнение деталей
-            task.requirements = correction.strip()
+            await self._note_unrecognized(task, correction)
 
         task.confidence = max(task.confidence, 0.9)  # пользователь подтвердил вручную
         task.touch()
         return task
+
+    async def _note_unrecognized(self, task: Task, correction: str) -> None:
+        """Правку не распознали как изменение поля — добавим как уточнение деталей."""
+        extra = correction.strip()
+        task.requirements = f"{task.requirements}; {extra}" if task.requirements else extra
 
     async def set_status(self, task: Task, status: TaskStatus) -> Task:
         task.status = status
@@ -193,6 +226,19 @@ class TaskService:
                 await self.board.complete_card(task.board_card_id)
             else:
                 await self.board.move_card(task.board_card_id, status)
+        self._save_snapshot()
+        return task
+
+    async def delete_task(self, task: Task) -> Task:
+        """Удалить задачу с доски и из памяти."""
+        if task.board_card_id:
+            try:
+                await self.board.delete_card(task.board_card_id)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Не удалось удалить карточку %s: %s", task.board_card_id, e)
+        self.repo.remove(task.id)
+        self.memory.forget(task.id)
+        self.snapshot.add_decision(f"Удалена задача «{task.title}»")
         self._save_snapshot()
         return task
 

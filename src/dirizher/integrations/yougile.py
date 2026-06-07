@@ -52,6 +52,7 @@ class BoardClient(Protocol):
     async def move_card(self, card_id: str, status: TaskStatus) -> None: ...
     async def complete_card(self, card_id: str) -> None: ...
     async def update_card(self, card_id: str, task: Task) -> None: ...
+    async def delete_card(self, card_id: str) -> None: ...
     async def list_cards(self) -> list[BoardCard]: ...
     async def close(self) -> None: ...
 
@@ -96,6 +97,10 @@ class MockBoard:
             c.description = task.requirements or ""
             c.status = task.status
             log.info("✏️  [mock] карточка #%s обновлена: %s", card_id, task.title)
+
+    async def delete_card(self, card_id: str) -> None:
+        if self._cards.pop(card_id, None):
+            log.info("🗑️  [mock] карточка #%s удалена", card_id)
 
     async def list_cards(self) -> list[BoardCard]:
         return list(self._cards.values())
@@ -161,6 +166,10 @@ class YouGileBoard:
         if col:
             body["columnId"] = col
         r = await self._http.put(f"/tasks/{card_id}", json=body)
+        r.raise_for_status()
+
+    async def delete_card(self, card_id: str) -> None:
+        r = await self._http.put(f"/tasks/{card_id}", json={"deleted": True})
         r.raise_for_status()
 
     async def list_cards(self) -> list[BoardCard]:

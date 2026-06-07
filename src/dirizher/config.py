@@ -37,7 +37,10 @@ class TelegramSettings(BaseSettings):
 
 class LLMSettings(BaseSettings):
     provider: str = "mock"  # mock | groq | gigachat
+    # >= confidence_threshold → задача; [ignore_threshold; confidence) → уточнить;
+    # < ignore_threshold → молча игнорируем (чтобы бот не спамил на болтовню).
     confidence_threshold: float = 0.7
+    ignore_threshold: float = 0.6
 
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"

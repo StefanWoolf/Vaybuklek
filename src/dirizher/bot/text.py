@@ -25,7 +25,6 @@ def render_task_card(task: Task, *, header: str = "🆕 Новая задача"
     lines.append(f"📅 Дедлайн: {esc(task.deadline_display())}")
     if task.sources:
         lines.append(f"📎 Источник: {esc(task.sources[0].source.label_ru)}")
-    lines.append(f"🎯 Уверенность: {task.confidence:.2f}")
     return "\n".join(lines)
 
 
@@ -39,7 +38,7 @@ def render_processed(p: ProcessedTask) -> str:
         )
     if p.outcome is Outcome.low_confidence:
         return (
-            f"🤔 <b>Не уверен, что это задача</b> (уверенность {p.task.confidence:.2f}):\n"
+            f"🤔 <b>Возможно, это задача:</b>\n"
             f"«{esc(p.task.title)}»\n\nЗавести её на доску?"
         )
     return render_task_card(p.task)

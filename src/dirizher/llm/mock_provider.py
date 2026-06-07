@@ -100,8 +100,15 @@ def _detect_priority(text: str) -> Priority:
     return Priority.medium
 
 
+_MULTI_NAME_RE = re.compile(r"^\s*([А-ЯЁ][а-яё]+(?:\s*(?:,|и)\s*[А-ЯЁ][а-яё]+)+)\b")
+
+
 def _match_assignee(text: str, ctx: ExtractionContext) -> tuple[str | None, str]:
-    """Вернуть (исполнитель, текст_без_префикса_имени)."""
+    """Вернуть (исполнитель, текст_без_префикса_имени). Поддержка списка имён."""
+    # «Данила и Андрей …» / «Данила, Андрей …» — несколько исполнителей
+    mm = _MULTI_NAME_RE.match(text)
+    if mm:
+        return mm.group(1), text[mm.end():]
     m = _NAME_RE.match(text)
     if m:
         return m.group(1), text[m.end():]
