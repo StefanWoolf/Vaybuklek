@@ -22,7 +22,7 @@ async def test_basic_task_with_assignee_and_deadline(ctx):
     assert len(tasks) == 1
     t = tasks[0]
     assert "авторизаци" in t.task.lower()
-    assert t.assignee == "Максим"
+    assert t.assignees == ["Максим"]
     assert t.deadline == date(2026, 6, 11)  # ближайший четверг
     assert t.confidence >= 0.7
 

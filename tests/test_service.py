@@ -28,7 +28,7 @@ async def test_new_task_then_create(c):
     processed = await c.service.ingest("Максим, сделай авторизацию к четвергу", _src(), today=TODAY)
     assert len(processed) == 1 and processed[0].outcome is Outcome.new
     task = processed[0].task
-    assert task.assignee == "maxim"  # нормализован к username команды
+    assert task.assignees == ["maxim"]  # нормализован к username команды
     created = await c.service.create_on_board(task)
     assert created.board_card_id is not None
     assert len(await c.board.list_cards()) == 1
