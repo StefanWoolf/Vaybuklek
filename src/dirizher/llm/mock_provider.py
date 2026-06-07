@@ -1,0 +1,180 @@
+"""Mock-провайдер: извлекает задачи эвристикой, без сети.
+
+Намеренно детерминированный — обеспечивает работоспособное демо и стабильные
+тесты, когда ключей LLM ещё нет. Покрывает типовой сценарий из отчёта:
+«Максим, сделай авторизацию к четвергу».
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date, timedelta
+
+from ..domain.enums import Priority
+from ..domain.models import ExtractedTask
+from .base import ExtractionContext
+
+# Глаголы-триггеры поручения (начальная форма основы → совпадаем по префиксу)
+_TRIGGERS = [
+    "сделай", "сделать", "подготов", "исправ", "поправ", "добав", "реализ",
+    "проверь", "настро", "напиш", "оформ", "собер", "создай", "создать",
+    "запус", "выгруз", "залей", "залить", "обнови", "обновить", "свяжись",
+    "отправь", "отправить", "разработ", "посмотри", "посчитай", "согласуй",
+    "выстав", "почини", "задеплой", "опиши", "протестируй", "затест",
+    "нужно", "надо", "давай", "запланируй", "назначь",
+]
+
+# Стемы дней недели (ловят любые падежи: «понедельник», «к понедельнику», ...)
+_WEEKDAYS = {
+    0: r"понедельник\w*|\bпн\b",
+    1: r"вторник\w*|\bвт\b",
+    2: r"сред[ауы]\w*|\bср\b",
+    3: r"четверг\w*|\bчт\b",
+    4: r"пятниц\w+|\bпт\b",
+    5: r"суббот\w+|\bсб\b",
+    6: r"воскресень\w*|\bвс\b",
+}
+
+_HIGH = ["срочно", "asap", "горит", "критич", "сегодня же", "немедленно"]
+_LOW = ["не срочно", "когда будет время", "не горит", "по возможности"]
+
+_NAME_RE = re.compile(r"^\s*(@\w+|[А-ЯЁ][а-яё]+)\s*[,:]\s*")
+
+
+def _next_weekday(today: date, target: int) -> date:
+    delta = (target - today.weekday()) % 7
+    delta = delta or 7  # «к пятнице», когда сегодня пятница => следующая
+    return today + timedelta(days=delta)
+
+
+def _parse_deadline(text: str, today: date) -> date | None:
+    low = text.lower()
+    if "послезавтра" in low:
+        return today + timedelta(days=2)
+    if "завтра" in low:
+        return today + timedelta(days=1)
+    if "сегодня" in low:
+        return today
+    if "конца недели" in low or "конец недели" in low:
+        return _next_weekday(today, 4)  # пятница
+    # явная дата DD.MM(.YYYY)
+    m = re.search(r"\b(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\b", low)
+    if m:
+        d, mth, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        year = today.year if not y else (2000 + int(y) if int(y) < 100 else int(y))
+        try:
+            return date(year, mth, d)
+        except ValueError:
+            pass
+    for wd, pattern in _WEEKDAYS.items():
+        if re.search(pattern, low):
+            return _next_weekday(today, wd)
+    return None
+
+
+def _detect_priority(text: str) -> Priority:
+    low = text.lower()
+    if any(k in low for k in _LOW):
+        return Priority.low
+    if any(k in low for k in _HIGH):
+        return Priority.high
+    return Priority.medium
+
+
+def _match_assignee(text: str, ctx: ExtractionContext) -> tuple[str | None, str]:
+    """Вернуть (исполнитель, текст_без_префикса_имени)."""
+    m = _NAME_RE.match(text)
+    if m:
+        return m.group(1), text[m.end():]
+    # имя где-то в тексте по словарю команды
+    low = text.lower()
+    for name in ctx.team_names():
+        bare = name.lstrip("@").lower()
+        if bare and re.search(rf"\b{re.escape(bare)}\b", low):
+            return name, text
+    return None, text
+
+
+def _looks_like_task(clause: str) -> bool:
+    low = clause.lower()
+    return any(t in low for t in _TRIGGERS)
+
+
+_TASK_COMMANDS = (
+    "поставь таск", "поставь задач", "сделай задач", "сделай таск", "заведи задач",
+    "запиши задач", "запиши это", "зафиксируй", "оформи задач", "добавь задач",
+    "создай задач",
+)
+
+
+def _is_task_command(message: str) -> bool:
+    """Короткое сообщение-команда «зафиксируй задачу» без своих деталей."""
+    low = message.strip().lower()
+    return len(low) <= 40 and any(cmd in low for cmd in _TASK_COMMANDS)
+
+
+def _clean_title(text: str, deadline_present: bool) -> str:
+    t = text.strip(" \t\n.—-")
+    # 1) убрать модификаторы приоритета/вежливости (они могут стоять после срока)
+    t = re.sub(r"\b(срочно|asap|пожалуйста|плиз|немедленно)\b", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s{2,}", " ", t).strip(" \t\n.,—-")
+    # 2) срезать срок (в начале или в конце) для чистоты заголовка
+    deadline_phrase = (
+        r"(к|до|в|на)\s+(завтра|послезавтра|сегодня|конца недели|"
+        r"понедельник\w*|вторник\w*|сред\w+|четверг\w*|пятниц\w+|суббот\w+|"
+        r"воскресень\w*|\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?)"
+    )
+    t = re.sub(rf"\s*{deadline_phrase}\b\.?\s*$", "", t, flags=re.IGNORECASE)  # хвост
+    t = re.sub(rf"^{deadline_phrase}\b[\s,]*", "", t, flags=re.IGNORECASE)      # начало
+    t = re.sub(r"\s{2,}", " ", t).strip(" \t\n.,—-")
+    return t[:1].upper() + t[1:] if t else text.strip()
+
+
+class MockLLMProvider:
+    name = "mock"
+
+    async def extract_tasks(
+        self, message: str, context: ExtractionContext
+    ) -> list[ExtractedTask]:
+        # Команда «зафиксируй задачу» без деталей → ищем задачу в недавней переписке.
+        if _is_task_command(message) and context.recent_dialog:
+            # убираем префиксы «Автор: », чтобы не путать их с исполнителем
+            lines = [d.split(": ", 1)[1] if ": " in d else d for d in context.recent_dialog]
+            found = await self._extract_from("\n".join(lines), context)
+            if found:
+                return found
+        return await self._extract_from(message, context)
+
+    async def _extract_from(
+        self, message: str, context: ExtractionContext
+    ) -> list[ExtractedTask]:
+        clauses = re.split(r"[;\n]+|(?<=[.!?])\s+", message.strip())
+        out: list[ExtractedTask] = []
+        for clause in clauses:
+            clause = clause.strip()
+            if len(clause) < 4 or not _looks_like_task(clause):
+                continue
+            assignee, rest = _match_assignee(clause, context)
+            deadline = _parse_deadline(clause, context.today)
+            priority = _detect_priority(clause)
+            title = _clean_title(rest, deadline is not None)
+            if not title:
+                continue
+
+            confidence = 0.6
+            if assignee:
+                confidence += 0.2
+            if deadline:
+                confidence += 0.1
+            confidence = min(confidence + 0.05, 0.95)
+
+            out.append(
+                ExtractedTask(
+                    task=title,
+                    assignee=assignee.lstrip("@") if assignee else None,
+                    deadline=deadline,
+                    priority=priority,
+                    confidence=round(confidence, 2),
+                )
+            )
+        return out

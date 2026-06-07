@@ -1,0 +1,29 @@
+# Секреты и конфигурация окружения
+.env
+.env.*
+!.env.example
+
+# Данные среды выполнения
+.data/
+*.sqlite3
+*.db
+chroma/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Аудио-временные файлы
+*.wav
+*.ogg
+*.mp3
+tmp/

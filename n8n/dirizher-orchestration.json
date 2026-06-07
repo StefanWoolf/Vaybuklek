@@ -1,0 +1,110 @@
+{
+  "name": "Дирижёр — оркестрация",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-update",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-telegram",
+      "name": "Telegram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 200],
+      "webhookId": "dirizher-telegram"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIRIZHER_CORE_URL }}/ingest/telegram",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Dirizher-Token", "value": "={{ $env.DIRIZHER_SHARED_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "http-ingest",
+      "name": "→ Ядро: /ingest/telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 200]
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 10,15 * * *" }] }
+      },
+      "id": "cron-reminders",
+      "name": "Cron: напоминания",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIRIZHER_CORE_URL }}/jobs/reminders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Dirizher-Token", "value": "={{ $env.DIRIZHER_SHARED_SECRET }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-reminders",
+      "name": "→ Ядро: /jobs/reminders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 420]
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 20 * * *" }] }
+      },
+      "id": "cron-evening",
+      "name": "Cron: вечерняя сверка",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 640]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIRIZHER_CORE_URL }}/jobs/evening-reconcile",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Dirizher-Token", "value": "={{ $env.DIRIZHER_SHARED_SECRET }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-evening",
+      "name": "→ Ядро: /jobs/evening-reconcile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 640]
+    }
+  ],
+  "connections": {
+    "Telegram Webhook": {
+      "main": [[{ "node": "→ Ядро: /ingest/telegram", "type": "main", "index": 0 }]]
+    },
+    "Cron: напоминания": {
+      "main": [[{ "node": "→ Ядро: /jobs/reminders", "type": "main", "index": 0 }]]
+    },
+    "Cron: вечерняя сверка": {
+      "main": [[{ "node": "→ Ядро: /jobs/evening-reconcile", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "pinData": {}
+}

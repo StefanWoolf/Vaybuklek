@@ -1,0 +1,97 @@
+"""Хранилище задач и реестр команды (in-memory).
+
+Намеренно простое и потокобезопасное на уровне asyncio (однопоточный event loop).
+Легко заменяется на БД за тем же интерфейсом.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+from .domain.enums import TaskStatus
+from .domain.models import Task, TeamMember
+
+
+class TaskRepository:
+    def __init__(self) -> None:
+        self._tasks: dict[str, Task] = {}
+
+    def add(self, task: Task) -> Task:
+        self._tasks[task.id] = task
+        return task
+
+    def get(self, task_id: str) -> Task | None:
+        return self._tasks.get(task_id)
+
+    def all(self) -> list[Task]:
+        return list(self._tasks.values())
+
+    def open(self) -> list[Task]:
+        return [t for t in self._tasks.values() if t.status != TaskStatus.done]
+
+    def by_assignee(self, name: str) -> list[Task]:
+        key = name.lstrip("@").lower()
+        return [
+            t for t in self._tasks.values()
+            if t.assignee and t.assignee.lstrip("@").lower() == key
+        ]
+
+    def open_by_assignee(self, name: str) -> list[Task]:
+        return [t for t in self.by_assignee(name) if t.status != TaskStatus.done]
+
+    def due_on_or_before(self, day: date) -> list[Task]:
+        return [
+            t for t in self._tasks.values()
+            if t.deadline and t.deadline <= day and t.status != TaskStatus.done
+        ]
+
+    def remove(self, task_id: str) -> None:
+        self._tasks.pop(task_id, None)
+
+
+class TeamRegistry:
+    """Реестр участников. Резолвит имя/алиас/username из текста в участника."""
+
+    def __init__(self) -> None:
+        self._by_id: dict[int, TeamMember] = {}
+        self._anon: list[TeamMember] = []  # без user_id (упомянуты, но не в чате)
+
+    def register(self, member: TeamMember) -> TeamMember:
+        if member.user_id is not None:
+            existing = self._by_id.get(member.user_id)
+            if existing:
+                existing.username = member.username or existing.username
+                existing.full_name = member.full_name or existing.full_name
+                for a in member.aliases:
+                    if a not in existing.aliases:
+                        existing.aliases.append(a)
+                return existing
+            self._by_id[member.user_id] = member
+            return member
+        self._anon.append(member)
+        return member
+
+    def all(self) -> list[TeamMember]:
+        return list(self._by_id.values()) + self._anon
+
+    def resolve(self, name: str | None) -> TeamMember | None:
+        """Найти участника по username/имени/алиасу (регистронезависимо)."""
+        if not name:
+            return None
+        key = name.lstrip("@").strip().lower()
+        if not key:
+            return None
+        for m in self.all():
+            candidates = [m.username or "", m.full_name, *m.aliases]
+            first_name = m.full_name.split()[0] if m.full_name else ""
+            candidates.append(first_name)
+            if any(c and c.lower() == key for c in candidates):
+                return m
+        return None
+
+    def mention_for(self, name: str | None) -> str:
+        """Готовая @-упоминалка для исполнителя (или просто текстом)."""
+        m = self.resolve(name)
+        if m:
+            return m.mention()
+        return f"@{name.lstrip('@')}" if name else "—"
