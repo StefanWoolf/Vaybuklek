@@ -139,25 +139,28 @@ class TaskService:
         from ..llm import mock_provider as mp  # переиспользуем эвристики
 
         today = today or date.today()
-        low = correction.lower()
         changed = False
 
+        # 1) Явное переименование («переименуй в …», «название: …») — приоритетно,
+        #    чтобы новый заголовок не съели другие эвристики.
+        new_title = mp.detect_rename(correction)
+        if new_title:
+            task.title = new_title
+            changed = True
+
+        # 2) Срок
         dl = mp._parse_deadline(correction, today)
         if dl:
             task.deadline = dl
             changed = True
 
-        # Приоритет: абсолютные и относительные формулировки.
-        # Понижение проверяем первым, чтобы «не срочно» не попало в повышение.
-        lower_kw = ("не срочн", "понизь", "пониже", "снизь", "пониз", "ниже", "меньше", "неважн")
-        raise_kw = ("повыси", "подними", "поднять", "приоритетн", "важнее", "выше", "больше")
-        if any(k in low for k in lower_kw):
-            task.priority = task.priority.__class__.low
-            changed = True
-        elif any(k in low for k in mp._HIGH) or any(k in low for k in raise_kw):
-            task.priority = task.priority.__class__.high
+        # 3) Приоритет (распознаёт императивы: «повысь», «понизь», «сделай срочной»).
+        prio = mp.detect_priority_change(correction)
+        if prio is not None:
+            task.priority = prio
             changed = True
 
+        # 4) Исполнитель
         ctx = ExtractionContext(today=today, team=self.team.all())
         assignee, _ = mp._match_assignee(correction, ctx)
         if assignee:
@@ -165,10 +168,10 @@ class TaskService:
             task.assignee = (member.username or member.full_name) if member else assignee.lstrip("@")
             changed = True
 
-        # Переформулировать заголовок через LLM — только если правка похожа на
-        # новую формулировку задачи (есть глагол-триггер). Иначе «приоритет меньше»
-        # не должен перезаписывать название.
-        if mp._looks_like_task(correction):
+        # 5) Переформулировать заголовок — ТОЛЬКО если после отсева директив
+        #    (приоритет/срок/исполнитель) осталась осмысленная новая формулировка.
+        #    Так «повысь приоритет» и «назначь на Дашу» не перезаписывают название.
+        if not new_title and mp.correction_is_reformulation(correction, assignee):
             extracted = await self.provider.extract_tasks(correction, ctx)
             if extracted:
                 ex = extracted[0]

@@ -38,6 +38,30 @@ _WEEKDAYS = {
 _HIGH = ["срочно", "asap", "горит", "критич", "сегодня же", "немедленно"]
 _LOW = ["не срочно", "когда будет время", "не горит", "по возможности"]
 
+# Директивы смены приоритета в правках. Ловят императивы и любые формы по основе:
+# «повысь / повысить / повысьте приоритет», «понизь», «сделай срочной» и т.п.
+_PRIORITY_UP = (
+    "повыс", "подним", "подыми", "поднять", "приоритетн", "поважнее", "важнее",
+    "срочн", "asap", "горит", "критич", "немедленно", "сегодня же", "повыше",
+)
+_PRIORITY_DOWN = (
+    "не срочн", "не важн", "неважн", "понизь", "пониз", "пониж", "снизь", "снизить",
+    "пониже", "по возможности", "когда будет время", "не горит",
+)
+
+
+def detect_priority_change(text: str) -> Priority | None:
+    """Распознать директиву смены приоритета в тексте правки (или None).
+
+    Понижение проверяем первым, чтобы «не срочно» не попало в повышение.
+    """
+    low = text.lower()
+    if any(k in low for k in _PRIORITY_DOWN):
+        return Priority.low
+    if any(k in low for k in _PRIORITY_UP):
+        return Priority.high
+    return None
+
 _NAME_RE = re.compile(r"^\s*(@\w+|[А-ЯЁ][а-яё]+)\s*[,:]\s*")
 
 
@@ -117,6 +141,64 @@ def _match_assignee(text: str, ctx: ExtractionContext) -> tuple[str | None, str]
 def _looks_like_task(clause: str) -> bool:
     low = clause.lower()
     return any(t in low for t in _TRIGGERS)
+
+
+# Явное переименование: «переименуй в …», «назови …», «название: …».
+_RENAME_RE = re.compile(
+    r"\b(?:переименуй\w*|переназови|назови|смени\s+назван\w*|измени\s+назван\w*|"
+    r"новое\s+назван\w*|назван\w*|заголовок)\b\s*(?:задач\w*\s*)?(?:на|в|:)?\s*"
+    r"[«\"']?(.+?)[»\"']?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def detect_rename(text: str) -> str | None:
+    """Распознать явную директиву переименования и вернуть новый заголовок."""
+    m = _RENAME_RE.search(text.strip())
+    if not m:
+        return None
+    title = m.group(1).strip(" \t\n.,—-«»\"'")
+    return title or None
+
+
+# Директивы по полям задачи (исполнитель/срок) — для отсева от «сути» правки.
+_ASSIGN_DIRECTIVE = re.compile(
+    r"\b(назнач\w*|повес\w*|переназнач\w*|поручи\w*|исполнител\w*)\b\s*(?:на\s+)?",
+    re.IGNORECASE,
+)
+_DEADLINE_DIRECTIVE = re.compile(
+    r"\b(перенес\w*|сдвин\w*|дедлайн\w*|срок\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_field_directives(text: str, assignee_raw: str | None) -> str:
+    """Убрать директивы по полям (приоритет/срок/исполнитель), оставив «суть».
+    Если после очистки осталась осмысленная формулировка — правка переписывает задачу."""
+    t = text
+    for kw in (*_PRIORITY_UP, *_PRIORITY_DOWN):
+        t = re.sub(re.escape(kw) + r"\w*", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bприоритет\w*\b", " ", t, flags=re.IGNORECASE)
+    t = _ASSIGN_DIRECTIVE.sub(" ", t)
+    if assignee_raw:
+        t = re.sub(re.escape(assignee_raw.lstrip("@")) + r"\w*", " ", t, flags=re.IGNORECASE)
+    t = _DEADLINE_DIRECTIVE.sub(" ", t)
+    t = re.sub(r"\bна\b", " ", t)  # остаточный предлог после «назначь на»/«перенеси на»
+    return re.sub(r"\s{2,}", " ", t).strip(" \t\n.,—-")
+
+
+def correction_is_reformulation(correction: str, assignee_raw: str | None) -> bool:
+    """True, если правка переформулирует саму задачу (а не только её поля).
+
+    После отсева директив должно остаться содержимое сверх самого глагола-триггера —
+    тогда это новая формулировка («сделай авторизацию»), а не «сделай срочной».
+    """
+    residual = _strip_field_directives(correction, assignee_raw)
+    if not _looks_like_task(residual):
+        return False
+    words = [w for w in re.split(r"\W+", residual) if w]
+    non_trigger = [w for w in words if not any(w.lower().startswith(t) for t in _TRIGGERS)]
+    return len(non_trigger) >= 1
 
 
 _TASK_COMMANDS = (
