@@ -20,11 +20,18 @@ from . import keyboards as kb
 from . import text as tx
 
 
-async def notify_workload(bot: Bot, c: AppContainer, assignee: str | None, chat_id: int) -> None:
-    """Предупредить чат о перегрузке исполнителя (если есть)."""
-    warning = c.service.workload_warning(assignee)
-    if warning:
-        await bot.send_message(chat_id, warning)
+async def notify_workload(bot: Bot, c: AppContainer, assignees, chat_id: int) -> None:
+    """Предупредить чат о перегрузке исполнителей (если есть)."""
+    if isinstance(assignees, str) or assignees is None:
+        assignees = [assignees] if assignees else []
+    seen: set[str] = set()
+    for name in assignees:
+        if name in seen:
+            continue
+        seen.add(name)
+        warning = c.service.workload_warning(name)
+        if warning:
+            await bot.send_message(chat_id, warning)
 
 
 async def present(bot: Bot, c: AppContainer, processed: list[ProcessedTask], chat_id: int) -> None:
@@ -48,16 +55,16 @@ async def present(bot: Bot, c: AppContainer, processed: list[ProcessedTask], cha
             if auto:
                 created = await c.service.create_on_board(p.task)
                 await bot.send_message(chat_id, tx.render_created(created))
-                await notify_workload(bot, c, created.assignee, chat_id)
+                await notify_workload(bot, c, created.assignees, chat_id)
             else:
                 await _ask_confirm(bot, c, p, chat_id)
 
 
 def _unknown_assignee(c: AppContainer, p: ProcessedTask) -> str | None:
-    """Имя исполнителя, которого бот не знает (нельзя тегать) — иначе None."""
-    name = p.task.assignee
-    if name and c.team.resolve(name) is None:
-        return name
+    """Первый исполнитель, которого бот не знает (нельзя тегать) — иначе None."""
+    for name in p.task.assignees:
+        if name and c.team.resolve(name) is None:
+            return name
     return None
 
 

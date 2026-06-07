@@ -33,7 +33,7 @@ class TaskRepository:
         key = name.lstrip("@").lower()
         return [
             t for t in self._tasks.values()
-            if t.assignee and t.assignee.lstrip("@").lower() == key
+            if any(a.lstrip("@").lower() == key for a in t.assignees)
         ]
 
     def open_by_assignee(self, name: str) -> list[Task]:
@@ -95,3 +95,9 @@ class TeamRegistry:
         if m:
             return m.mention()
         return f"@{name.lstrip('@')}" if name else "—"
+
+    def mentions_for(self, names: list[str]) -> str:
+        """@-упоминания нескольких исполнителей через запятую (или «—»)."""
+        if not names:
+            return "—"
+        return ", ".join(self.mention_for(n) for n in names)

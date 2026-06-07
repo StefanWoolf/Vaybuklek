@@ -79,10 +79,14 @@ class TaskService:
         processed: list[ProcessedTask] = []
         for ex in extracted:
             task = Task.from_extracted(ex, source)
-            # нормализуем исполнителя к каноническому имени/username команды
-            member = self.team.resolve(task.assignee)
-            if member:
-                task.assignee = member.username or member.full_name or task.assignee
+            # нормализуем каждого исполнителя к каноническому имени/username команды
+            normalized: list[str] = []
+            for raw in task.assignees:
+                member = self.team.resolve(raw)
+                name = (member.username or member.full_name) if member else raw
+                if name and not any(name.lower() == n.lower() for n in normalized):
+                    normalized.append(name)
+            task.assignees = normalized
 
             if ex.confidence < self.settings.llm.confidence_threshold:
                 processed.append(ProcessedTask(task, Outcome.low_confidence))
@@ -98,16 +102,27 @@ class TaskService:
                 processed.append(ProcessedTask(task, Outcome.new))
         return processed
 
+    # ── Привязка исполнителей к пользователям доски (YouGile) ─────────────────
+    def _board_assignee_ids(self, task: Task) -> list[str]:
+        """Сопоставить имена/usernames исполнителей с id пользователей доски."""
+        ids: list[str] = []
+        for name in task.assignees:
+            member = self.team.resolve(name)
+            if member and member.yougile_id and member.yougile_id not in ids:
+                ids.append(member.yougile_id)
+        return ids
+
     # ── Применение решений ───────────────────────────────────────────────────
     async def create_on_board(self, task: Task) -> Task:
         """Создать карточку на доске и зафиксировать задачу в памяти."""
         task.status = TaskStatus.todo
+        task.board_assignee_ids = self._board_assignee_ids(task)
         card_id = await self.board.create_card(task)
         task.board_card_id = card_id
         task.touch()
         self.repo.add(task)
         self.memory.remember(task.id, task.dedup_text())
-        self.snapshot.add_decision(f"Создана задача «{task.title}» → {task.assignee or '—'}")
+        self.snapshot.add_decision(f"Создана задача «{task.title}» → {task.assignees_display()}")
         self._save_snapshot()
         return task
 
@@ -124,10 +139,24 @@ class TaskService:
     async def edit_task(self, task: Task) -> Task:
         """Применить правки. Если карточка уже на доске — синхронизировать."""
         task.touch()
+        task.board_assignee_ids = self._board_assignee_ids(task)
         if task.board_card_id:
             await self.board.update_card(task.board_card_id, task)
             self.memory.remember(task.id, task.dedup_text())
             self._save_snapshot()
+        return task
+
+    async def delete_task(self, task: Task) -> Task:
+        """Удалить задачу с доски, из памяти и из репозитория."""
+        if task.board_card_id:
+            try:
+                await self.board.delete_card(task.board_card_id)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Не удалось удалить карточку %s на доске: %s", task.board_card_id, e)
+        self.memory.forget(task.id)
+        self.repo.remove(task.id)
+        self.snapshot.add_decision(f"Удалена задача «{task.title}»")
+        self._save_snapshot()
         return task
 
     async def apply_correction(self, task: Task, correction: str, *, today: date | None = None) -> Task:
@@ -160,18 +189,37 @@ class TaskService:
             task.priority = prio
             changed = True
 
-        # 4) Исполнитель
+        # 4) Исполнители (с учётом склонений: «назначь на Дашу» → Даша).
+        #    По умолчанию правка заменяет список; слова «добавь», «ещё», «также»,
+        #    «подключи», «в помощь» — добавляют к текущим (мульти-исполнители).
         ctx = ExtractionContext(today=today, team=self.team.all())
-        assignee, _ = mp._match_assignee(correction, ctx)
-        if assignee:
-            member = self.team.resolve(assignee)
-            task.assignee = (member.username or member.full_name) if member else assignee.lstrip("@")
-            changed = True
+        mentions = mp.find_team_mentions(correction, ctx)  # [(каноническое, словоформа)]
+        surfaces: list[str] = [surf for _, surf in mentions]
+        names: list[str] = []
+        for canon, _surf in mentions:
+            member = self.team.resolve(canon)
+            names.append((member.username or member.full_name) if member else canon.lstrip("@"))
+        # запасной путь: «Имя: …» для незнакомого боту исполнителя
+        if not names:
+            prefix, _ = mp._match_assignee(correction, ctx)
+            if prefix:
+                member = self.team.resolve(prefix)
+                names.append((member.username or member.full_name) if member else prefix.lstrip("@"))
+                surfaces.append(prefix)
+        if names:
+            add_mode = any(k in correction.lower() for k in ("добав", "ещё", "еще", "также", "тоже", "подключи", "в помощь", "вместе с"))
+            if add_mode:
+                for n in names:
+                    if task.add_assignee(n):
+                        changed = True
+            else:
+                task.assignees = names
+                changed = True
 
         # 5) Переформулировать заголовок — ТОЛЬКО если после отсева директив
         #    (приоритет/срок/исполнитель) осталась осмысленная новая формулировка.
         #    Так «повысь приоритет» и «назначь на Дашу» не перезаписывают название.
-        if not new_title and mp.correction_is_reformulation(correction, assignee):
+        if not new_title and mp.correction_is_reformulation(correction, surfaces):
             extracted = await self.provider.extract_tasks(correction, ctx)
             if extracted:
                 ex = extracted[0]

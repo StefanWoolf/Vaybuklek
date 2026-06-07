@@ -42,7 +42,7 @@ class ProjectSnapshot:
         if open_tasks:
             for t in open_tasks:
                 dl = t.deadline.isoformat() if t.deadline else "без срока"
-                who = t.assignee or "—"
+                who = t.assignees_display()
                 lines.append(f"- [{t.priority.emoji}] {t.title} — {who} — до {dl}")
         else:
             lines.append("- (нет открытых задач)")
@@ -62,5 +62,5 @@ class ProjectSnapshot:
         if not open_tasks:
             return ""
         return "Открытые задачи: " + "; ".join(
-            f"{t.title} ({t.assignee or '—'})" for t in open_tasks
+            f"{t.title} ({t.assignees_display()})" for t in open_tasks
         )

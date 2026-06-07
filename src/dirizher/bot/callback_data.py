@@ -12,7 +12,8 @@ class ConfirmCD(CallbackData, prefix="cf"):
 
 
 class TaskCD(CallbackData, prefix="tk"):
-    # done | start
+    # todo | in_progress | done — перенос между колонками
+    # delete | delete_yes | delete_no — удаление с подтверждением
     action: str
     task_id: str
 

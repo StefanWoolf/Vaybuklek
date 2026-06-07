@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from html import escape as esc
 
 from aiogram import F, Router
@@ -30,6 +31,7 @@ HELP = """\
 /remind — проверить дедлайны и напомнить
 /join — представиться (чтобы я мог вешать на вас задачи)
 /register Имя; алиас1, алиас2 — представиться с алиасами
+/link email@домен — привязать ваш аккаунт к исполнителю на доске YouGile
 /whoami — как я вас вижу
 /help — эта справка
 
@@ -72,11 +74,12 @@ async def cmd_tasks(message: Message, c: AppContainer) -> None:
     if not tasks:
         await message.answer("У вас нет открытых задач 🎉")
         return
-    lines = ["<b>Ваши открытые задачи:</b>", ""]
+    await message.answer("<b>Ваши открытые задачи:</b>")
     for t in tasks:
-        lines.append(tx.render_task_card(t, header=f"📋 {t.title}").split("\n", 1)[1])
-        lines.append("")
-    await message.answer("\n".join(lines))
+        await message.answer(
+            tx.render_task_card(t, header=f"📋 {t.title}"),
+            reply_markup=kb.task_actions_keyboard(t),
+        )
 
 
 @router.message(Command("register"))
@@ -102,6 +105,51 @@ async def cmd_register(message: Message, command: CommandObject, c: AppContainer
         f"✅ Записал: <b>{esc(full_name)}</b>"
         + (f" (@{esc(user.username)})" if user.username else "")
         + (f"\nАлиасы: {esc(', '.join(aliases))}" if aliases else "")
+    )
+
+
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+@router.message(Command("link"))
+async def cmd_link(message: Message, command: CommandObject, c: AppContainer) -> None:
+    """Привязать ТГ-аккаунт к пользователю доски YouGile по email."""
+    user = message.from_user
+    email = (command.args or "").strip()
+    if not email or not _EMAIL_RE.fullmatch(email):
+        await message.answer(
+            "Укажите ваш email на доске YouGile:\n"
+            "<code>/link имя@домен</code>\n\n"
+            "Это свяжет ваши задачи с вашим аккаунтом на доске."
+        )
+        return
+
+    # убеждаемся, что человек известен боту (иначе регистрируем по данным ТГ)
+    member = c.team.resolve(user.username or user.full_name)
+    if member is None:
+        member = c.team.register(
+            TeamMember(user_id=user.id, username=user.username, full_name=user.full_name)
+        )
+
+    try:
+        board_user = await c.board.find_user_by_email(email)
+    except Exception as e:  # noqa: BLE001
+        await message.answer(f"Не смог обратиться к доске: {esc(str(e))}")
+        return
+
+    if board_user is None:
+        await message.answer(
+            f"На доске нет пользователя с email <b>{esc(email)}</b>. "
+            "Проверьте адрес или попросите администратора добавить вас в проект."
+        )
+        return
+
+    member.yougile_id = board_user.id
+    member.yougile_email = email
+    who = board_user.name or email
+    await message.answer(
+        f"🔗 Привязал ваш аккаунт к исполнителю доски: <b>{esc(who)}</b>.\n"
+        "Теперь новые задачи на вас будут назначаться и на доске YouGile."
     )
 
 

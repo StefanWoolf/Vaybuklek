@@ -73,7 +73,7 @@ async def main() -> None:
         print("  (задач не найдено)")
     for p in result.processed:
         tag = {Outcome.new: "🆕", Outcome.duplicate: "♻️", Outcome.low_confidence: "🤔"}[p.outcome]
-        print(f"  {tag} {p.task.title} — {p.task.assignee or '—'} — до {p.task.deadline or '—'} "
+        print(f"  {tag} {p.task.title} — {p.task.assignees_display()} — до {p.task.deadline or '—'} "
               f"(conf={p.task.confidence})")
         if p.outcome is Outcome.new:
             created = await c.service.create_on_board(p.task)

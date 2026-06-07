@@ -88,7 +88,9 @@ class ReconciliationService:
         open_tasks = self.repo.open()
         by_assignee: dict[str, list] = {}
         for t in open_tasks:
-            by_assignee.setdefault((t.assignee or "—"), []).append(t)
+            owners = t.assignees or ["—"]
+            for owner in owners:
+                by_assignee.setdefault(owner, []).append(t)
 
         lines = [f"🌙 <b>Вечерняя сверка</b> · {today.isoformat()}", ""]
         if not open_tasks:

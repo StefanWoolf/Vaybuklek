@@ -21,7 +21,8 @@ def render_task_card(task: Task, *, header: str = "🆕 Новая задача"
     ]
     if task.requirements:
         lines.append(f"📝 {esc(task.requirements)}")
-    lines.append(f"👤 Исполнитель: {esc(task.assignee or '—')}")
+    who_label = "Исполнители" if len(task.assignees) > 1 else "Исполнитель"
+    lines.append(f"👤 {who_label}: {esc(task.assignees_display())}")
     lines.append(f"📅 Дедлайн: {esc(task.deadline_display())}")
     if task.sources:
         lines.append(f"📎 Источник: {esc(task.sources[0].source.label_ru)}")
@@ -58,7 +59,7 @@ def render_board(cards) -> str:  # cards: list[BoardCard]
         items = buckets[status]
         out.append(f"<b>{status.label_ru}</b> ({len(items)})")
         for c in items:
-            who = f" — {esc(c.assignee)}" if c.assignee else ""
+            who = f" — {esc(', '.join(c.assignees))}" if c.assignees else ""
             out.append(f"  • {esc(c.title)}{who}")
         out.append("")
     return "\n".join(out).strip()
@@ -68,6 +69,6 @@ def render_created(task: Task) -> str:
     return (
         f"✅ Карточка создана на доске.\n"
         f"📋 {esc(task.title)}\n"
-        f"👤 {esc(task.assignee or '—')} · 📅 {esc(task.deadline_display())}\n"
+        f"👤 {esc(task.assignees_display())} · 📅 {esc(task.deadline_display())}\n"
         f"🆔 <code>{esc(task.board_card_id or '')}</code>"
     )

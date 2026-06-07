@@ -32,7 +32,9 @@ class ExtractedTask(BaseModel):
     """
 
     task: str = Field(..., description="Краткая формулировка задачи")
-    assignee: str | None = Field(None, description="Имя/username исполнителя или null")
+    assignees: list[str] = Field(
+        default_factory=list, description="Имена/usernames исполнителей (может быть несколько)"
+    )
     deadline: date | None = Field(None, description="Дедлайн в формате YYYY-MM-DD или null")
     deadline_time: time | None = Field(None, description="Время суток HH:MM, если указано, иначе null")
     priority: Priority = Priority.medium
@@ -47,6 +49,23 @@ class ExtractedTask(BaseModel):
             raise ValueError("task не может быть пустым")
         return v
 
+    @field_validator("assignees", mode="before")
+    @classmethod
+    def _coerce_assignees(cls, v) -> list[str]:
+        """Принять как строку (один исполнитель), так и список; почистить мусор/дубли."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        out: list[str] = []
+        for a in v:
+            if a is None:
+                continue
+            a = str(a).strip().lstrip("@").strip()
+            if a and a.lower() not in {"null", "none", "—", "-"} and a not in out:
+                out.append(a)
+        return out
+
 
 class TeamMember(BaseModel):
     """Участник команды. `aliases` — имена, которыми его зовут в чате/на встрече,
@@ -57,6 +76,8 @@ class TeamMember(BaseModel):
     full_name: str = ""
     aliases: list[str] = Field(default_factory=list)
     voice_registered: bool = False
+    yougile_id: str | None = None   # id пользователя на доске YouGile (привязка по email)
+    yougile_email: str | None = None
 
     def mention(self) -> str:
         """HTML-упоминание (бот работает в parse_mode=HTML)."""
@@ -84,7 +105,7 @@ class Task(BaseModel):
     id: str = Field(default_factory=_new_id)
     title: str
     requirements: str | None = None
-    assignee: str | None = None
+    assignees: list[str] = Field(default_factory=list)
     deadline: date | None = None
     deadline_time: time | None = None  # время суток, если указано
     priority: Priority = Priority.medium
@@ -94,6 +115,7 @@ class Task(BaseModel):
     sources: list[SourceRef] = Field(default_factory=list)
 
     board_card_id: str | None = None  # id карточки в YouGile
+    board_assignee_ids: list[str] = Field(default_factory=list)  # id исполнителей на доске
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
     reminded_at: datetime | None = None
@@ -103,13 +125,36 @@ class Task(BaseModel):
         return cls(
             title=ex.task,
             requirements=ex.requirements,
-            assignee=ex.assignee,
+            assignees=list(ex.assignees),
             deadline=ex.deadline,
             deadline_time=ex.deadline_time,
             priority=ex.priority,
             confidence=ex.confidence,
             sources=[source],
         )
+
+    @property
+    def primary_assignee(self) -> str | None:
+        """Первый (главный) исполнитель — для совместимости и кратких представлений."""
+        return self.assignees[0] if self.assignees else None
+
+    def assignees_display(self) -> str:
+        """Список исполнителей через запятую (или «—»)."""
+        return ", ".join(self.assignees) if self.assignees else "—"
+
+    def set_assignee(self, name: str | None) -> None:
+        """Назначить единственного исполнителя (заменяет список)."""
+        self.assignees = [name.lstrip("@")] if name else []
+
+    def add_assignee(self, name: str) -> bool:
+        """Добавить исполнителя, если его ещё нет. Возвращает True, если добавлен."""
+        name = name.lstrip("@").strip()
+        if not name:
+            return False
+        if any(a.lower() == name.lower() for a in self.assignees):
+            return False
+        self.assignees.append(name)
+        return True
 
     def deadline_display(self) -> str:
         """Человекочитаемый дедлайн с днём недели и временем (если есть)."""

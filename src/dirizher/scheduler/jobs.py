@@ -43,14 +43,17 @@ async def run_reminders(c: AppContainer, *, today: date | None = None) -> int:
         chat_id = _target_chat(c, task)
         if not chat_id or c.bot is None:
             continue
-        mention = c.team.mention_for(task.assignee)  # уже HTML-безопасно
+        mention = c.team.mentions_for(task.assignees)  # уже HTML-безопасно
         overdue = task.deadline and task.deadline < today
         head = "⏰ <b>Просрочено!</b>" if overdue else "⏰ <b>Скоро дедлайн</b>"
         dl = task.deadline_display() if task.deadline else "—"
+        from ..bot import keyboards as kb
+
         await c.bot.send_message(
             chat_id,
             f"{head}\n📋 {_esc(task.title)}\n👤 {mention} · 📅 до {_esc(dl)}\n"
             f"Отметьте статус, когда будет готово.",
+            reply_markup=kb.task_actions_keyboard(task),
         )
         task.reminded_at = now
         sent += 1

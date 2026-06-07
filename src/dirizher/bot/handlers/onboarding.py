@@ -93,8 +93,14 @@ async def on_claim(cb: CallbackQuery, callback_data: IntroCD, c: AppContainer) -
     # перепривязываем открытые задачи с этим именем на known-участника
     repointed = 0
     for t in c.repo.open():
-        if t.assignee and t.assignee.lstrip("@").lower() == name.lower():
-            t.assignee = handle
+        new_list = [handle if a.lstrip("@").lower() == name.lower() else a for a in t.assignees]
+        if new_list != t.assignees:
+            # дедуп на случай, если handle уже был в списке
+            deduped: list[str] = []
+            for a in new_list:
+                if not any(a.lower() == d.lower() for d in deduped):
+                    deduped.append(a)
+            t.assignees = deduped
             t.touch()
             repointed += 1
 
@@ -102,7 +108,11 @@ async def on_claim(cb: CallbackQuery, callback_data: IntroCD, c: AppContainer) -
     pending = c.pending.get(callback_data.pid)
     await cb.answer(f"Закрепил «{name}» за вами")
     if pending is not None and isinstance(cb.message, Message):
-        pending.task.assignee = handle
+        # заменяем именно неизвестное имя на закреплённого участника
+        pending.task.assignees = [
+            handle if a.lstrip("@").lower() == name.lower() else a
+            for a in pending.task.assignees
+        ] or [handle]
         await cb.message.edit_text(
             tx.render_task_card(pending.task),
             reply_markup=kb.confirm_keyboard(pending.pid),

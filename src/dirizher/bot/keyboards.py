@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from ..domain.enums import TaskStatus
+from ..domain.models import Task
 from .callback_data import ConfirmCD, IntroCD, TaskCD
 
 
@@ -48,10 +50,29 @@ def clarify_keyboard(pid: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def task_actions_keyboard(task_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="▶️ В работу", callback_data=TaskCD(action="start", task_id=task_id).pack()),
-            InlineKeyboardButton(text="✅ Готово", callback_data=TaskCD(action="done", task_id=task_id).pack()),
-        ]]
-    )
+def task_actions_keyboard(task: Task) -> InlineKeyboardMarkup:
+    """Управление карточкой: перенос между колонками + удаление.
+
+    Текущая колонка помечается галочкой и не дублируется кнопкой перехода.
+    """
+    kb = InlineKeyboardBuilder()
+    cols = [
+        (TaskStatus.todo, "📋 К выполнению"),
+        (TaskStatus.in_progress, "▶️ В работу"),
+        (TaskStatus.done, "✅ Готово"),
+    ]
+    for status, label in cols:
+        if task.status == status:
+            label = "✓ " + label
+        kb.button(text=label, callback_data=TaskCD(action=status.value, task_id=task.id))
+    kb.button(text="🗑 Удалить", callback_data=TaskCD(action="delete", task_id=task.id))
+    kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+def confirm_delete_keyboard(task_id: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Да, удалить", callback_data=TaskCD(action="delete_yes", task_id=task_id))
+    kb.button(text="↩️ Отмена", callback_data=TaskCD(action="delete_no", task_id=task_id))
+    kb.adjust(2)
+    return kb.as_markup()

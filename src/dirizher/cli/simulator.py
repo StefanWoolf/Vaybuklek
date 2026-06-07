@@ -139,7 +139,7 @@ async def main() -> None:
         if line.startswith("/tasks"):
             name = line[6:].strip()
             for t in c.repo.open_by_assignee(name):
-                print(f"  • {t.title} — {t.assignee} — до {t.deadline or '—'}")
+                print(f"  • {t.title} — {t.assignees_display()} — до {t.deadline or '—'}")
             continue
 
         source = SourceRef(source=TaskSource.chat, chat_id=chat_id, excerpt=line[:200])

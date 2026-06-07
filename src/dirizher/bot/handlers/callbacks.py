@@ -39,9 +39,11 @@ async def on_confirm(cb: CallbackQuery, callback_data: ConfirmCD, c: AppContaine
         c.pending.pop(pid)
         created = await c.service.create_on_board(pending.task)
         await _finish(cb, tx.render_created(created))
-        warning = c.service.workload_warning(created.assignee)
-        if warning and isinstance(cb.message, Message):
-            await cb.message.answer(warning)
+        if isinstance(cb.message, Message):
+            for name in created.assignees:
+                warning = c.service.workload_warning(name)
+                if warning:
+                    await cb.message.answer(warning)
 
     elif action == "reject":
         c.pending.pop(pid)
@@ -98,18 +100,49 @@ async def on_correction(message: Message, c: AppContainer, state: FSMContext) ->
     )
 
 
-# ── Управление статусом задачи ───────────────────────────────────────────────
+# ── Управление задачей: перенос между колонками и удаление ───────────────────
+_STATUS_ACTIONS = {
+    "todo": (TaskStatus.todo, "📋 К выполнению"),
+    "in_progress": (TaskStatus.in_progress, "▶️ В работе"),
+    "done": (TaskStatus.done, "✅ Готово"),
+}
+
+
 @router.callback_query(TaskCD.filter())
 async def on_task_action(cb: CallbackQuery, callback_data: TaskCD, c: AppContainer) -> None:
     task = c.repo.get(callback_data.task_id)
     if task is None:
-        await cb.answer("Задача не найдена", show_alert=False)
+        await cb.answer("Задача не найдена 🙈", show_alert=False)
         return
-    if callback_data.action == "done":
-        await c.service.set_status(task, TaskStatus.done)
-        await cb.answer("✅ Готово")
-    elif callback_data.action == "start":
-        await c.service.set_status(task, TaskStatus.in_progress)
-        await cb.answer("▶️ В работе")
-    if isinstance(cb.message, Message):
-        await cb.message.edit_reply_markup(reply_markup=kb.task_actions_keyboard(task.id))
+
+    action = callback_data.action
+
+    # Перенос между колонками К выполнению / В работе / Готово
+    if action in _STATUS_ACTIONS:
+        status, label = _STATUS_ACTIONS[action]
+        if task.status == status:
+            await cb.answer(f"Уже здесь: {label}")
+            return
+        await c.service.set_status(task, status)
+        await cb.answer(f"Перенёс → {label}")
+        if isinstance(cb.message, Message):
+            await cb.message.edit_reply_markup(reply_markup=kb.task_actions_keyboard(task))
+        return
+
+    # Удаление с подтверждением
+    if action == "delete":
+        await cb.answer()
+        if isinstance(cb.message, Message):
+            await cb.message.edit_reply_markup(reply_markup=kb.confirm_delete_keyboard(task.id))
+        return
+    if action == "delete_no":
+        await cb.answer("Отменил удаление")
+        if isinstance(cb.message, Message):
+            await cb.message.edit_reply_markup(reply_markup=kb.task_actions_keyboard(task))
+        return
+    if action == "delete_yes":
+        await c.service.delete_task(task)
+        await cb.answer("🗑 Удалено")
+        if isinstance(cb.message, Message):
+            await cb.message.edit_text(f"🗑 Задача удалена: «{esc(task.title)}»")
+        return

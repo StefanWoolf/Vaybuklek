@@ -69,7 +69,10 @@ def _normalize(item: dict) -> dict:
     # LLM возвращает ключ "time"; внутреннее поле называется deadline_time
     if "time" in out and "deadline_time" not in out:
         out["deadline_time"] = out.pop("time")
-    for key in ("assignee", "deadline", "deadline_time", "requirements"):
+    # LLM может вернуть один "assignee" — приводим к списку "assignees"
+    if "assignee" in out and "assignees" not in out:
+        out["assignees"] = out.pop("assignee")
+    for key in ("deadline", "deadline_time", "requirements"):
         v = out.get(key)
         if isinstance(v, str) and v.strip().lower() in {"", "null", "none", "—", "-"}:
             out[key] = None
