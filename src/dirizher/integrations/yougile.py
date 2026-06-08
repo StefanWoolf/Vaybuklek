@@ -42,6 +42,7 @@ class BoardCard:
     assignee: str | None = None
     deadline: date | None = None
     description: str = ""
+    assignee_ids: list[str] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -77,6 +78,7 @@ class MockBoard:
             assignee=task.assignee,
             deadline=task.deadline,
             description=task.requirements or "",
+            assignee_ids=list(task.assignee_yougile_ids),
         )
         log.info("🗂️  [mock] карточка создана #%s: %s", card_id, task.title)
         return card_id
@@ -97,6 +99,7 @@ class MockBoard:
             c.deadline = task.deadline
             c.description = task.requirements or ""
             c.status = task.status
+            c.assignee_ids = list(task.assignee_yougile_ids)
             log.info("✏️  [mock] карточка #%s обновлена: %s", card_id, task.title)
 
     async def delete_card(self, card_id: str) -> None:
@@ -126,6 +129,9 @@ class YouGileBoard:
             TaskStatus.in_progress: cfg.column_in_progress,
             TaskStatus.done: cfg.column_done,
         }
+        # обратная карта columnId -> статус, чтобы /board показывал реальную колонку
+        self._status_by_col = {v: k for k, v in self._columns.items() if v}
+        self._users: dict[str, str] | None = None  # кэш id->имя пользователя доски
         self._http = httpx.AsyncClient(
             base_url=cfg.base_url,
             headers={"Authorization": f"Bearer {cfg.api_key}"},
@@ -141,8 +147,8 @@ class YouGileBoard:
             payload["description"] = task.requirements
         if task.deadline:
             payload["deadline"] = _deadline_obj(task.deadline, task.deadline_time)
-        if task.assignee_yougile_id:
-            payload["assigned"] = [task.assignee_yougile_id]
+        if task.assignee_yougile_ids:
+            payload["assigned"] = task.assignee_yougile_ids
         r = await self._http.post("/tasks", json=payload)
         r.raise_for_status()
         card_id = r.json().get("id", "")
@@ -154,8 +160,8 @@ class YouGileBoard:
         body: dict = {}
         if col:
             body["columnId"] = col
-        if status == TaskStatus.done:
-            body["completed"] = True
+        # completed синхронизируем со статусом: done → True, иначе снимаем флаг
+        body["completed"] = status == TaskStatus.done
         r = await self._http.put(f"/tasks/{card_id}", json=body)
         r.raise_for_status()
 
@@ -172,8 +178,8 @@ class YouGileBoard:
         col = self._columns.get(task.status)
         if col:
             body["columnId"] = col
-        if task.assignee_yougile_id:
-            body["assigned"] = [task.assignee_yougile_id]
+        if task.assignee_yougile_ids:
+            body["assigned"] = task.assignee_yougile_ids
         r = await self._http.put(f"/tasks/{card_id}", json=body)
         r.raise_for_status()
 
@@ -196,14 +202,63 @@ class YouGileBoard:
                 return u.get("id", ""), name
         return None
 
+    async def _users_map(self) -> dict[str, str]:
+        """id пользователя доски → отображаемое имя (кэшируется на сессию)."""
+        if self._users is not None:
+            return self._users
+        users: dict[str, str] = {}
+        try:
+            r = await self._http.get("/users", params={"limit": 1000})
+            r.raise_for_status()
+            for u in r.json().get("content", []):
+                users[u.get("id", "")] = u.get("realName") or u.get("name") or u.get("email") or "?"
+        except Exception as e:  # noqa: BLE001
+            log.warning("YouGile /users недоступен для имён исполнителей: %s", e)
+        self._users = users
+        return users
+
     async def list_cards(self) -> list[BoardCard]:
+        from datetime import datetime
+
         r = await self._http.get("/tasks", params={"limit": 1000})
         r.raise_for_status()
         items = r.json().get("content", [])
+        users = await self._users_map()
         cards: list[BoardCard] = []
         for it in items:
-            status = TaskStatus.done if it.get("completed") else TaskStatus.todo
-            cards.append(BoardCard(id=it.get("id", ""), title=it.get("title", ""), status=status))
+            if it.get("deleted"):
+                continue
+            # /tasks возвращает задачи ВСЕХ досок компании — берём только наши три
+            # колонки, иначе в доску подмешиваются чужие карточки.
+            col = it.get("columnId", "")
+            if col not in self._status_by_col:
+                continue
+            # статус берём по реальной колонке; completed имеет приоритет «Готово»
+            status = self._status_by_col[col]
+            if it.get("completed"):
+                status = TaskStatus.done
+            # исполнители: id -> имя
+            assigned = it.get("assigned") or []
+            names = [users.get(uid, "") for uid in assigned]
+            assignee = ", ".join(n for n in names if n) or None
+            # дедлайн (object {deadline: ms} либо null)
+            deadline = None
+            dl = it.get("deadline")
+            if isinstance(dl, dict) and dl.get("deadline"):
+                try:
+                    deadline = datetime.fromtimestamp(dl["deadline"] / 1000).date()
+                except Exception:  # noqa: BLE001
+                    deadline = None
+            cards.append(
+                BoardCard(
+                    id=it.get("id", ""),
+                    title=it.get("title", ""),
+                    status=status,
+                    assignee=assignee,
+                    deadline=deadline,
+                    assignee_ids=list(assigned),
+                )
+            )
         return cards
 
     async def close(self) -> None:

@@ -15,3 +15,9 @@ class Introduce(StatesGroup):
     """Знакомство: участник присылает email доски YouGile и прозвища."""
 
     waiting_details = State()
+
+
+class EnrollVoice(StatesGroup):
+    """Регистрация голоса: участник присылает короткое голосовое для отпечатка."""
+
+    waiting_voice = State()

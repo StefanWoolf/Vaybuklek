@@ -30,6 +30,14 @@ async def run_polling(container: AppContainer) -> None:
     bot = build_bot(container)
     container.bot = bot
     dp = build_dispatcher(container)
+    # Самолечение: на старте сверяем память с доской и выкидываем «призраков»
+    # (карточки, удалённые на доске вручную), чтобы счётчики задач были честными.
+    try:
+        ghosts = await container.service.reconcile_with_board()
+        if ghosts:
+            log.info("Старт: убрано призрачных задач из памяти: %d", ghosts)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Старт: сверка с доской не удалась: %s", e)
     me = await bot.get_me()
     log.info("Бот @%s запущен (polling)", me.username)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

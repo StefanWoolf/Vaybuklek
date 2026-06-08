@@ -11,33 +11,54 @@ from apscheduler.triggers.cron import CronTrigger
 
 from ..container import AppContainer
 from ..logging_setup import get_logger
-from .jobs import run_evening_reconciliation, run_reminders
+from .jobs import (
+    run_evening_reconciliation,
+    run_leaderboard_post,
+    run_morning_digest,
+    run_reminders,
+)
 
 log = get_logger("dirizher.scheduler")
 
 
 def build_scheduler(c: AppContainer) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone=c.settings.timezone)
+    tz = c.settings.timezone
+    sch = c.settings.schedule
 
     sched.add_job(
+        run_morning_digest,
+        CronTrigger.from_crontab(sch.morning_digest_cron, timezone=tz),
+        args=[c],
+        id="morning_digest",
+        replace_existing=True,
+    )
+    sched.add_job(
         run_reminders,
-        CronTrigger.from_crontab(c.settings.schedule.reminder_cron, timezone=c.settings.timezone),
+        CronTrigger.from_crontab(sch.reminder_cron, timezone=tz),
         args=[c],
         id="reminders",
         replace_existing=True,
     )
     sched.add_job(
         run_evening_reconciliation,
-        CronTrigger.from_crontab(
-            c.settings.schedule.evening_reconcile_cron, timezone=c.settings.timezone
-        ),
+        CronTrigger.from_crontab(sch.evening_reconcile_cron, timezone=tz),
         args=[c],
         id="evening_reconciliation",
         replace_existing=True,
     )
+    sched.add_job(
+        run_leaderboard_post,
+        CronTrigger.from_crontab(sch.leaderboard_cron, timezone=tz),
+        args=[c],
+        id="leaderboard",
+        replace_existing=True,
+    )
     log.info(
-        "Планировщик: напоминания [%s], вечерняя сверка [%s]",
-        c.settings.schedule.reminder_cron,
-        c.settings.schedule.evening_reconcile_cron,
+        "Планировщик: утро [%s], напоминания [%s], вечер [%s], лидерборд [%s]",
+        sch.morning_digest_cron,
+        sch.reminder_cron,
+        sch.evening_reconcile_cron,
+        sch.leaderboard_cron,
     )
     return sched

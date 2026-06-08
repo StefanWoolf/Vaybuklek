@@ -15,8 +15,11 @@ from ...domain.enums import TaskSource
 from ...domain.models import SourceRef, TeamMember
 from ...llm.prefilter import looks_taskish
 from ...logging_setup import get_logger
+import re
+
 from .. import task_commands
 from ..flow import present
+from .commands import send_my_tasks
 
 router = Router(name="messages")
 log = get_logger("dirizher.bot.messages")
@@ -27,6 +30,23 @@ TASK_COMMANDS = (
     "запиши задач", "запиши это", "зафиксируй", "оформи задач", "добавь задач",
     "создай задач", "поставь на доск", "таск поставь",
 )
+
+
+# «Какие у меня задачи/таски?», «мои задачи», «что по моим таскам» — показать список
+_MY_TASKS_RE = re.compile(
+    r"(?:какие|что|покажи|мои|моих|моим|список)\b.{0,20}\b(?:задач|таск|дел)",
+    re.IGNORECASE,
+)
+# Короткая форма-запрос: «таски», «задачи @username», «мои дела»
+_TASKS_LEAD_RE = re.compile(
+    r"^\s*(?:мои\s+)?(?:задач\w*|таск\w*|дела)\b(?:\s+@?\w+)?\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_my_tasks_query(text: str) -> bool:
+    low = text.lower()
+    return bool(_MY_TASKS_RE.search(low) or _TASKS_LEAD_RE.match(low))
 
 
 def _author(user) -> str:
@@ -55,14 +75,22 @@ async def on_text(message: Message, c: AppContainer, state: FSMContext) -> None:
 
     user = message.from_user
     if user:
+        known_before = c.team.knows(user.id)
         c.team.register(
             TeamMember(user_id=user.id, username=user.username, full_name=user.full_name)
         )
+        if not known_before:
+            c.persist()  # новый участник — сохраняем, чтобы пережил перезапуск
 
     text = message.text or ""
     chat_id = message.chat.id
     # пополняем историю чата ДО извлечения (сообщение войдёт в контекст)
     c.history.add(chat_id, _author(user), text)
+
+    # Вопрос «какие у меня задачи?» / «таски @user» — интерактивный список
+    if _is_my_tasks_query(text):
+        await send_my_tasks(message, c, query_text=text)
+        return
 
     # Команда над существующей задачей (закрой/в работу/удали) — раньше извлечения
     cmd = task_commands.detect(text)

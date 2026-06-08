@@ -11,9 +11,20 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Корень проекта (src/dirizher/config.py → ../../.. = репозиторий). Привязываем к
+# нему папку данных, чтобы бот читал/писал ОДНИ И ТЕ ЖЕ файлы независимо от того,
+# из какого каталога его запустили (иначе ./.data зависит от cwd — частый источник
+# «пустого реестра/состояния», особенно при наличии двух копий проекта).
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _data(name: str) -> str:
+    return str(_ROOT / ".data" / name)
 
 
 class TelegramSettings(BaseSettings):
@@ -87,16 +98,49 @@ class MemorySettings(BaseSettings):
     # backend: lexical | chroma. По умолчанию lexical — без сетевых загрузок.
     # chroma включает семантический поиск (скачает embedding-модель при 1-м старте).
     backend: str = "lexical"
-    chroma_path: str = "./.data/chroma"
+    chroma_path: str = _data("chroma")
     dedup_threshold: float = 0.83
-    project_snapshot: str = "./.data/project.md"
+    project_snapshot: str = _data("project.md")
+    # JSON-хранилище состояния (команда + задачи) — переживает перезапуск бота.
+    state_path: str = _data("state.json")
+    # JSON-хранилище игровых профилей (XP/уровни/ачивки), п.10. В .gitignore.
+    game_path: str = _data("gamification.json")
 
 
 class AudioSettings(BaseSettings):
     enabled: bool = False
-    whisper_model: str = "small"
+    # Бэкенд распознавания: groq (Whisper через Groq API, без локальных моделей)
+    # или local (faster-whisper + опц. pyannote — требует тяжёлых зависимостей).
+    backend: str = "groq"  # groq | local
+    whisper_model: str = "small"  # модель локального faster-whisper (backend=local)
+    groq_whisper_model: str = "whisper-large-v3-turbo"  # модель Groq Whisper
     groq_api_key: str = ""
-    hf_token: str = ""
+    # Доп. ключи Groq через запятую — ротация при достижении лимита (429).
+    groq_api_keys: str = ""
+    hf_token: str = ""  # опциональная диаризация pyannote (только backend=local)
+
+    # ── Встречи: захват системного звука (loopback) ───────────────────────────
+    meeting_samplerate: int = 16000
+    meeting_silence_seconds: int = 180  # тишина дольше → авто-стоп записи встречи
+    meeting_max_minutes: int = 180  # жёсткий предел длительности записи
+    meeting_silence_rms: float = 0.004  # порог RMS, ниже которого чанк = тишина
+    loopback_device: str = ""  # имя устройства вывода; пусто → колонки по умолчанию
+
+    # ── Голосовые отпечатки (speaker embedding → авто-имя) ────────────────────
+    embedding_model: str = "pyannote/embedding"
+    voiceprints_path: str = _data("voiceprints.json")
+    voiceprint_threshold: float = 0.72
+
+    @property
+    def groq_key_list(self) -> list[str]:
+        """Ключи Groq для Whisper (основной + дополнительные), без пустых и дублей."""
+        raw = [self.groq_api_key, *self.groq_api_keys.split(",")]
+        keys: list[str] = []
+        for k in raw:
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+        return keys
 
     @property
     def is_mock(self) -> bool:
@@ -104,8 +148,10 @@ class AudioSettings(BaseSettings):
 
 
 class ScheduleSettings(BaseSettings):
+    morning_digest_cron: str = "0 9 * * *"        # утренняя сводка задач на день
     reminder_cron: str = "0 10,15 * * *"
     evening_reconcile_cron: str = "0 20 * * *"
+    leaderboard_cron: str = "0 18 * * 5"          # лидерборд по пятницам в 18:00
     remind_before_hours: int = 24
 
 

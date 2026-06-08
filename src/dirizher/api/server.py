@@ -20,7 +20,12 @@ from fastapi import FastAPI, Header, HTTPException
 
 from ..container import AppContainer
 from ..logging_setup import get_logger
-from ..scheduler.jobs import run_evening_reconciliation, run_reminders
+from ..scheduler.jobs import (
+    run_evening_reconciliation,
+    run_leaderboard_post,
+    run_morning_digest,
+    run_reminders,
+)
 
 log = get_logger("dirizher.api")
 
@@ -55,11 +60,23 @@ def create_api(container: AppContainer) -> FastAPI:
         await dp.feed_update(container.bot, Update.model_validate(update))
         return {"status": "processed"}
 
+    @app.post("/jobs/morning-digest")
+    async def jobs_morning(x_dirizher_token: str | None = Header(default=None)) -> dict[str, int]:
+        _auth(x_dirizher_token)
+        chats = await run_morning_digest(container)
+        return {"chats_notified": chats}
+
     @app.post("/jobs/reminders")
     async def jobs_reminders(x_dirizher_token: str | None = Header(default=None)) -> dict[str, int]:
         _auth(x_dirizher_token)
         sent = await run_reminders(container)
         return {"reminders_sent": sent}
+
+    @app.post("/jobs/leaderboard")
+    async def jobs_leaderboard(x_dirizher_token: str | None = Header(default=None)) -> dict[str, int]:
+        _auth(x_dirizher_token)
+        chats = await run_leaderboard_post(container)
+        return {"chats_notified": chats}
 
     @app.post("/jobs/evening-reconcile")
     async def jobs_evening(x_dirizher_token: str | None = Header(default=None)) -> dict[str, int]:

@@ -17,6 +17,17 @@ class TaskCD(CallbackData, prefix="tk"):
     task_id: str
 
 
+class BoardCD(CallbackData, prefix="bc"):
+    # todo | start | done | del | del_yes | del_no — действие над карточкой доски
+    action: str
+    cid: str  # id карточки YouGile
+
+
+class ForgetCD(CallbackData, prefix="fg"):
+    # yes | no — подтверждение очистки памяти об участниках
+    action: str
+
+
 class IntroCD(CallbackData, prefix="intro"):
     # self  — представиться за себя
     # claim — «это я» закрепить неизвестного исполнителя из карточки (pid)

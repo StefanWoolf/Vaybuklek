@@ -54,10 +54,15 @@ async def present(bot: Bot, c: AppContainer, processed: list[ProcessedTask], cha
 
 
 def _unknown_assignee(c: AppContainer, p: ProcessedTask) -> str | None:
-    """Имя исполнителя, которого бот не знает (нельзя тегать) — иначе None."""
-    name = p.task.assignee
-    if name and c.team.resolve(name) is None:
-        return name
+    """Первый исполнитель, которого бот не знает (нельзя тегать) — иначе None.
+
+    Поддерживает несколько исполнителей через запятую: ищем первого незнакомого.
+    """
+    from ..services.task_service import _split_assignees
+
+    for name in _split_assignees(p.task.assignee):
+        if c.team.resolve(name) is None:
+            return name
     return None
 
 

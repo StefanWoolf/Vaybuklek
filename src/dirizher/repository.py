@@ -82,6 +82,16 @@ class TeamRegistry:
         self._anon.append(member)
         return member
 
+    def knows(self, user_id: int | None) -> bool:
+        return user_id is not None and user_id in self._by_id
+
+    def clear(self) -> int:
+        """Забыть всех участников (имена, алиасы, email, привязки к доске)."""
+        n = len(self._by_id) + len(self._anon)
+        self._by_id.clear()
+        self._anon.clear()
+        return n
+
     def all(self) -> list[TeamMember]:
         return list(self._by_id.values()) + self._anon
 

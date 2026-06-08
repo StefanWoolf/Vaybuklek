@@ -38,6 +38,34 @@
     },
     {
       "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * *" }] }
+      },
+      "id": "cron-morning",
+      "name": "Cron: утренняя сводка",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIRIZHER_CORE_URL }}/jobs/morning-digest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Dirizher-Token", "value": "={{ $env.DIRIZHER_SHARED_SECRET }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-morning",
+      "name": "→ Ядро: /jobs/morning-digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 320]
+    },
+    {
+      "parameters": {
         "rule": { "interval": [{ "field": "cronExpression", "expression": "0 10,15 * * *" }] }
       },
       "id": "cron-reminders",
@@ -91,17 +119,51 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [560, 640]
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 18 * * 5" }] }
+      },
+      "id": "cron-leaderboard",
+      "name": "Cron: лидерборд (пятница)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 840]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DIRIZHER_CORE_URL }}/jobs/leaderboard",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Dirizher-Token", "value": "={{ $env.DIRIZHER_SHARED_SECRET }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-leaderboard",
+      "name": "→ Ядро: /jobs/leaderboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 840]
     }
   ],
   "connections": {
     "Telegram Webhook": {
       "main": [[{ "node": "→ Ядро: /ingest/telegram", "type": "main", "index": 0 }]]
     },
+    "Cron: утренняя сводка": {
+      "main": [[{ "node": "→ Ядро: /jobs/morning-digest", "type": "main", "index": 0 }]]
+    },
     "Cron: напоминания": {
       "main": [[{ "node": "→ Ядро: /jobs/reminders", "type": "main", "index": 0 }]]
     },
     "Cron: вечерняя сверка": {
       "main": [[{ "node": "→ Ядро: /jobs/evening-reconcile", "type": "main", "index": 0 }]]
+    },
+    "Cron: лидерборд (пятница)": {
+      "main": [[{ "node": "→ Ядро: /jobs/leaderboard", "type": "main", "index": 0 }]]
     }
   },
   "settings": { "executionOrder": "v1" },

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -26,6 +27,25 @@ log = get_logger("dirizher.service")
 import re as _re
 
 _ASSIGNEE_SPLIT = _re.compile(r"\s*(?:,|;|/|&|\bи\b|\band\b)\s*", _re.IGNORECASE)
+_MENTION_RE = _re.compile(r"@([A-Za-z0-9_]{3,})")
+_WORD_RE = _re.compile(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_]*")
+# Маркеры режима «добавить к исполнителям», а не «заменить»
+_APPEND_KW = ("добав", "ещё", "еще", "к исполнит", "плюс", "также", "и ещё")
+
+
+# «Пустые» заголовки — это команда-фиксатор, попавшая в title по ошибке LLM.
+_JUNK_TITLE_RE = _re.compile(
+    r"^\W*(?:"
+    r"созда(?:ть|й|ем)\s+задач\w*|поставь?\s+задач\w*|поставить\s+задач\w*|"
+    r"заведи\s+задач\w*|запиши\s+задач\w*|оформи\s+задач\w*|зафиксир\w*|"
+    r"таск\w*|задач\w*|на\s+доску|сделать\s+задач\w*"
+    r")\W*$",
+    _re.IGNORECASE,
+)
+
+
+def _is_junk_title(title: str) -> bool:
+    return bool(_JUNK_TITLE_RE.match(title.strip()))
 
 
 def _split_assignees(name: str | None) -> list[str]:
@@ -62,6 +82,7 @@ class TaskService:
         snapshot: ProjectSnapshot,
         repo: TaskRepository,
         team: TeamRegistry,
+        persist: "Callable[[], None] | None" = None,
     ) -> None:
         self.settings = settings
         self.provider = provider
@@ -70,6 +91,7 @@ class TaskService:
         self.snapshot = snapshot
         self.repo = repo
         self.team = team
+        self._persist = persist or (lambda: None)
         # Резервный извлекатель на случай недоступности LLM (лимит/сеть).
         from ..llm.mock_provider import MockLLMProvider
         self._fallback = MockLLMProvider()
@@ -104,11 +126,18 @@ class TaskService:
         thr = self.settings.llm.confidence_threshold
         ignore = self.settings.llm.ignore_threshold
 
+        # Источник для проверки «упомянут ли исполнитель» (анти-галлюцинация фан-аута).
+        haystack = f"{text} {' '.join(history or [])}".lower()
+
         processed: list[ProcessedTask] = []
         for ex in extracted:
             # Порог тишины: совсем неуверенные — молча игнорируем (анти-спам).
             if ex.confidence < ignore:
                 log.info("Пропуск (conf=%.2f < %.2f): %s", ex.confidence, ignore, ex.task)
+                continue
+            # Заголовок-«команда» без сути («создать задачу») — не заводим карточку.
+            if _is_junk_title(ex.task):
+                log.info("Пропуск пустого заголовка-команды: %s", ex.task)
                 continue
             low_conf = ex.confidence < thr
 
@@ -120,6 +149,13 @@ class TaskService:
                 member = self.team.resolve(task.assignee)
                 if member:
                     task.assignee = member.username or member.full_name or task.assignee
+
+                # Анти-галлюцинация: если LLM навесил задачу на человека, которого в
+                # тексте/переписке нет, — это выдуманное «навешивание на всю команду»
+                # (фан-аут). Такую задачу не заводим.
+                if who and not self._assignee_grounded(who, member, haystack):
+                    log.info("Пропуск: исполнитель «%s» не упомянут в источнике — выдумка", who)
+                    continue
 
                 if low_conf:
                     processed.append(ProcessedTask(task, Outcome.low_confidence))
@@ -134,16 +170,80 @@ class TaskService:
                     )
                 else:
                     processed.append(ProcessedTask(task, Outcome.new))
-        return processed
+        return self._dedup_batch(processed)
+
+    def _assignee_grounded(self, who: str, member, haystack: str) -> bool:
+        """Упомянут ли исполнитель в тексте/переписке (а не выдуман LLM)."""
+        cands: list[str] = []
+        if member:
+            cands += [member.username or "", member.full_name or "", *member.aliases]
+            if member.full_name:
+                cands.append(member.full_name.split()[0])
+        else:
+            cands.append(str(who).lstrip("@"))
+        return any(c and c.lower() in haystack for c in cands)
+
+    @staticmethod
+    def _dedup_batch(processed: list[ProcessedTask]) -> list[ProcessedTask]:
+        """Схлопнуть повторы внутри одной пачки извлечения (одинаковая задача
+        на одного исполнителя). Защищает от фан-аута одной фразы в N карточек."""
+        seen: set[tuple[str, str]] = set()
+        out: list[ProcessedTask] = []
+        for p in processed:
+            key = (p.task.title.strip().lower(), (p.task.assignee or "").strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+        return out
 
     # ── Применение решений ───────────────────────────────────────────────────
+    def _people_in(self, text: str) -> list[tuple[str, str | None]]:
+        """Найти исполнителей в тексте правки → [(отображаемое_имя, yougile_id|None)].
+
+        Учитываем @упоминания и имена/алиасы известных участников, встретившиеся
+        как отдельные слова. Порядок сохраняем, дубликаты убираем.
+        """
+        found: list[tuple[str, str | None]] = []
+        seen: set[str] = set()
+
+        def _add(disp: str, yid: str | None) -> None:
+            key = disp.lstrip("@").lower()
+            if key and key not in seen:
+                seen.add(key)
+                found.append((disp, yid))
+
+        for m in _MENTION_RE.finditer(text):
+            handle = m.group(1)
+            member = self.team.resolve(handle)
+            if member:
+                _add(member.username or member.full_name, member.yougile_id)
+            else:
+                _add(handle, None)
+
+        tokens = {w.lower() for w in _WORD_RE.findall(text)}
+        for member in self.team.all():
+            cands = [member.username or "", member.full_name, *member.aliases]
+            if member.full_name:
+                cands.append(member.full_name.split()[0])
+            if any(c and c.lower() in tokens for c in cands):
+                _add(member.username or member.full_name, member.yougile_id)
+        return found
+
+    def _resolve_yougile_ids(self, assignee: str | None) -> list[str]:
+        """Из строки исполнителей («@a, @b») собрать id пользователей YouGile."""
+        ids: list[str] = []
+        for name in _split_assignees(assignee):
+            member = self.team.resolve(name)
+            if member and member.yougile_id and member.yougile_id not in ids:
+                ids.append(member.yougile_id)
+        return ids
+
     async def create_on_board(self, task: Task) -> Task:
         """Создать карточку на доске и зафиксировать задачу в памяти."""
         task.status = TaskStatus.todo
-        # назначить карточку на реального пользователя YouGile, если он привязан
-        member = self.team.resolve(task.assignee)
-        if member and member.yougile_id:
-            task.assignee_yougile_id = member.yougile_id
+        # назначить карточку на реальных пользователей YouGile, если они привязаны
+        task.assignee_yougile_ids = self._resolve_yougile_ids(task.assignee)
         card_id = await self.board.create_card(task)
         task.board_card_id = card_id
         task.touch()
@@ -204,11 +304,27 @@ class TaskService:
             task.priority = task.priority.__class__.high
             changed = True
 
-        ctx = ExtractionContext(today=today, team=self.team.all())
-        assignee, _ = mp._match_assignee(correction, ctx)
-        if assignee:
-            member = self.team.resolve(assignee)
-            task.assignee = (member.username or member.full_name) if member else assignee.lstrip("@")
+        # Исполнители: поддержка нескольких людей и режима «добавить к».
+        people = self._people_in(correction)
+        if not people and any(k in low for k in ("назнач", "исполнит", "поставь на", "повесь на")):
+            # запасной разбор одиночного (в т.ч. незнакомого) имени
+            ctx = ExtractionContext(today=today, team=self.team.all())
+            raw, _ = mp._match_assignee(correction, ctx)
+            if raw:
+                member = self.team.resolve(raw)
+                disp = (member.username or member.full_name) if member else raw.lstrip("@")
+                people = [(disp, member.yougile_id if member else None)]
+        if people:
+            append = any(k in low for k in _APPEND_KW)
+            names = _split_assignees(task.assignee) if append else []
+            ids = list(task.assignee_yougile_ids) if append else []
+            for disp, yid in people:
+                if disp not in names:
+                    names.append(disp)
+                if yid and yid not in ids:
+                    ids.append(yid)
+            task.assignee = ", ".join(names)
+            task.assignee_yougile_ids = ids
             changed = True
 
         # Явное переименование — только по чёткому маркеру.
@@ -244,6 +360,40 @@ class TaskService:
         self._save_snapshot()
         return task
 
+    async def reconcile_with_board(self) -> int:
+        """Синхронизировать память с доской: выкинуть «призраков» — задачи, чьи
+        карточки на доске уже удалены (вручную на доске и т.п.).
+
+        Без этого память (state.json) расходится с доской и бот считает лишние
+        задачи (ложные «12 открытых», переоценка нагрузки). Возвращает число
+        удалённых призраков. Безопасно: на mock-доске и при сбое API ничего не трёт."""
+        if getattr(self.board, "name", "") == "mock":
+            return 0
+        try:
+            cards = await self.board.list_cards()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Сверка с доской пропущена (доска недоступна): %s", e)
+            return 0
+
+        live_ids = {c.id for c in cards}
+        synced = [t for t in self.repo.all() if t.board_card_id]
+        # Предохранитель: если доска вернула пусто, а в памяти есть синхронизированные
+        # задачи — это похоже на сбой API, а не на пустую доску. Не удаляем ничего.
+        if synced and not live_ids:
+            log.warning("Сверка с доской: доска вернула 0 карточек — пропускаю (вероятно сбой).")
+            return 0
+
+        removed = 0
+        for t in synced:
+            if t.board_card_id not in live_ids:
+                self.repo.remove(t.id)
+                self.memory.forget(t.id)
+                removed += 1
+        if removed:
+            log.info("Сверка с доской: удалено призраков из памяти: %d", removed)
+            self._save_snapshot()
+        return removed
+
     async def delete_task(self, task: Task) -> Task:
         """Удалить задачу с доски и из памяти."""
         if task.board_card_id:
@@ -273,7 +423,7 @@ class TaskService:
             who = self.team.mention_for(assignee)
             parts = [f"⚠️ Внимание: у {who} {len(tasks)} открытых задач"]
             if peak_n >= max_same_day and peak_day:
-                parts.append(f", {peak_n} дедлайна на {peak_day.isoformat()}")
+                parts.append(f", {peak_n} дедлайнов на {peak_day.isoformat()}")
             parts.append(". Возможно, стоит перераспределить.")
             return "".join(parts)
         return None
@@ -283,3 +433,5 @@ class TaskService:
             self.snapshot.save(self.team.all(), self.repo.all())
         except Exception as e:  # noqa: BLE001
             log.warning("Не удалось сохранить снимок проекта: %s", e)
+        # персистентность состояния (команда + задачи) — переживает перезапуск
+        self._persist()

@@ -52,6 +52,22 @@ class SpeakerRegistry:
             encoding="utf-8",
         )
 
+    def __len__(self) -> int:
+        return len(self._prints)
+
+    def names(self) -> list[str]:
+        return [vp.name for vp in self._prints]
+
+    @property
+    def threshold(self) -> float:
+        return self._threshold
+
+    def rank(self, embedding: list[float]) -> list[tuple[str, float]]:
+        """Все известные голоса с косинусной близостью, по убыванию."""
+        scored = [(vp.name, _cosine(embedding, vp.embedding)) for vp in self._prints]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored
+
     def enroll(self, name: str, embedding: list[float]) -> None:
         self._prints = [vp for vp in self._prints if vp.name != name]
         self._prints.append(VoicePrint(name=name, embedding=embedding))

@@ -58,9 +58,23 @@ def render_board(cards) -> str:  # cards: list[BoardCard]
         out.append(f"<b>{status.label_ru}</b> ({len(items)})")
         for c in items:
             who = f" — {esc(c.assignee)}" if c.assignee else ""
-            out.append(f"  • {esc(c.title)}{who}")
+            due = f" · 📅 {c.deadline.isoformat()}" if getattr(c, "deadline", None) else ""
+            out.append(f"  • {esc(c.title)}{who}{due}")
         out.append("")
     return "\n".join(out).strip()
+
+
+def render_board_task(card) -> str:  # card: BoardCard
+    """Карточка задачи с доски для интерактивного списка «мои задачи»."""
+    lines = [
+        f"📋 <b>{esc(card.title)}</b>",
+        f"🔸 Статус: {card.status.label_ru}",
+    ]
+    if card.assignee:
+        lines.append(f"👤 {esc(card.assignee)}")
+    if getattr(card, "deadline", None):
+        lines.append(f"📅 {card.deadline.isoformat()}")
+    return "\n".join(lines)
 
 
 def render_created(task: Task) -> str:

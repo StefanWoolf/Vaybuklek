@@ -40,19 +40,40 @@ class MeetingService:
             who = mapping.get(seg.speaker)
             if who is None:
                 member = self.service.team.resolve(seg.speaker)
-                who = (member.full_name if member else seg.speaker)
+                if member:
+                    who = f"@{member.username}" if member.username else (member.full_name or seg.speaker)
+                else:
+                    who = seg.speaker
                 mapping[seg.speaker] = who
             lines.append(f"{who}: {seg.text}")
         return "\n".join(lines) if lines else transcript.text
 
     @staticmethod
     def _summarize(text: str, max_points: int = 6) -> str:
-        """Краткое саммари: предложения, похожие на договорённости/задачи."""
+        """Краткое саммари: договорённости/задачи с указанием, кто их озвучил.
+
+        На вход — размеченный текст («@user: реплика» построчно). Для каждой
+        строки запоминаем спикера и тащим его в пункты саммари, чтобы было видно,
+        КТО что сказал. Строки без явного спикера (плоский текст) — как есть.
+        """
         import re
 
-        sentences = re.split(r"(?<=[.!?\n])\s+", text)
-        points = [s.strip() for s in sentences if any(h in s.lower() for h in _TRIGGER_HINTS)]
-        points = points[:max_points]
+        points: list[str] = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            who, sep, body = line.partition(": ")
+            if not sep:  # нет префикса спикера — вся строка как тело
+                who, body = "", line
+            for sent in re.split(r"(?<=[.!?])\s+", body):
+                sent = sent.strip()
+                if sent and any(h in sent.lower() for h in _TRIGGER_HINTS):
+                    points.append(f"{who}: {sent}" if who else sent)
+                    if len(points) >= max_points:
+                        break
+            if len(points) >= max_points:
+                break
         if not points:
             return "Ключевых договорённостей не выделено."
         return "\n".join(f"• {p}" for p in points)

@@ -2,7 +2,7 @@
 
 from aiogram import Router
 
-from . import callbacks, commands, messages, onboarding, voice
+from . import callbacks, commands, meeting, messages, onboarding, voice
 
 
 def build_root_router() -> Router:
@@ -11,6 +11,8 @@ def build_root_router() -> Router:
     root.include_router(commands.router)
     root.include_router(onboarding.router)
     root.include_router(callbacks.router)
+    # meeting — до voice (ловит голос в режиме регистрации) и до messages (ссылка Телемоста)
+    root.include_router(meeting.router)
     root.include_router(voice.router)
     root.include_router(messages.router)
     return root

@@ -85,6 +85,7 @@ async def on_introduce_self(cb: CallbackQuery, c: AppContainer, state: FSMContex
     u = cb.from_user
     # базовую личность фиксируем сразу, детали (email/прозвища) — следующим сообщением
     c.team.register(TeamMember(user_id=u.id, username=u.username, full_name=u.full_name))
+    c.persist()
     await state.set_state(Introduce.waiting_details)
     await cb.answer()
     if isinstance(cb.message, Message):
@@ -136,9 +137,10 @@ async def on_details(message: Message, c: AppContainer, state: FSMContext) -> No
         if t.assignee and t.assignee.lstrip("@").lower() in keys:
             t.assignee = handle
             if member.yougile_id:
-                t.assignee_yougile_id = member.yougile_id
+                t.assignee_yougile_ids = [member.yougile_id]
             t.touch()
             repointed += 1
+    c.persist()
 
     alias_str = ", ".join(aliases) if aliases else "—"
     suffix = f"\nПереназначил задач: {repointed}." if repointed else ""
@@ -167,6 +169,7 @@ async def on_claim(cb: CallbackQuery, callback_data: IntroCD, c: AppContainer) -
             t.assignee = handle
             t.touch()
             repointed += 1
+    c.persist()
 
     # обновляем карточку «в полёте», если она ещё ждёт подтверждения
     pending = c.pending.get(callback_data.pid)

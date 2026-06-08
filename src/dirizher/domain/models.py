@@ -86,8 +86,8 @@ class Task(BaseModel):
     id: str = Field(default_factory=_new_id)
     title: str
     requirements: str | None = None
-    assignee: str | None = None
-    assignee_yougile_id: str | None = None  # id пользователя YouGile для назначения
+    assignee: str | None = None  # отображаемая строка (может быть несколько через «, »)
+    assignee_yougile_ids: list[str] = Field(default_factory=list)  # id пользователей YouGile
     deadline: date | None = None
     deadline_time: time | None = None  # время суток, если указано
     priority: Priority = Priority.medium

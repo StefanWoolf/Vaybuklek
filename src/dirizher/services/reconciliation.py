@@ -38,10 +38,17 @@ class DailyReports:
 
 
 class ReconciliationService:
-    def __init__(self, repo: TaskRepository, team: TeamRegistry, service: TaskService) -> None:
+    def __init__(
+        self,
+        repo: TaskRepository,
+        team: TeamRegistry,
+        service: TaskService,
+        game: "object | None" = None,
+    ) -> None:
         self.repo = repo
         self.team = team
         self.service = service
+        self.game = game  # GamificationService | None — начисление XP при закрытии
         self._reports: dict[int, DailyReports] = {}
 
     def _today_reports(self, chat_id: int, today: date) -> DailyReports:
@@ -75,6 +82,8 @@ class ReconciliationService:
             if is_done:
                 await self.service.set_status(t, TaskStatus.done)
                 notes.append(f"✅ «{t.title}» → Готово")
+                if self.game is not None:
+                    notes.extend(self.game.complete(t, today=today))
             elif is_progress:
                 await self.service.set_status(t, TaskStatus.in_progress)
                 notes.append(f"▶️ «{t.title}» → В работе")

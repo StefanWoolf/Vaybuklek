@@ -27,6 +27,7 @@ audio = [
     "pyannote.audio>=3.1",
     "soundfile>=0.12",
     "numpy>=1.26",
+    "soundcard>=0.4",  # захват системного звука встреч (WASAPI loopback)
 ]
 # Разработка и тесты
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]

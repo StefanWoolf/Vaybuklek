@@ -44,11 +44,29 @@ class MockTranscriber:
         return TranscriptResult(text="", segments=[], is_mock=True)
 
 
-def build_transcriber(cfg: AudioSettings) -> Transcriber:
+def build_transcriber(
+    cfg: AudioSettings,
+    fallback_groq_keys: list[str] | None = None,
+    *,
+    speaker_registry=None,
+    embedder=None,
+) -> Transcriber:
     if cfg.is_mock:
         log.info("Распознавание речи: mock (DIRIZHER_AUDIO__ENABLED=false)")
         return MockTranscriber()
+
+    if cfg.backend == "groq":
+        # Свои ключи аудио или, если их нет, переиспользуем ключи LLM-провайдера.
+        keys = cfg.groq_key_list or list(fallback_groq_keys or [])
+        if not keys:
+            log.warning("Groq Whisper включён, но ключей нет — откатываюсь в mock")
+            return MockTranscriber()
+        from .groq_transcriber import GroqWhisperTranscriber
+
+        log.info("Распознавание речи: Groq Whisper (%s)", cfg.groq_whisper_model)
+        return GroqWhisperTranscriber(keys, cfg.groq_whisper_model)
+
     from .pipeline import WhisperPipeline  # ленивый импорт тяжёлых зависимостей
 
-    log.info("Распознавание речи: noisereduce → pyannote → Whisper")
-    return WhisperPipeline(cfg)
+    log.info("Распознавание речи: noisereduce → pyannote → faster-whisper (local)")
+    return WhisperPipeline(cfg, speaker_registry=speaker_registry, embedder=embedder)

@@ -111,6 +111,8 @@ async def handle(message: Message, c: AppContainer, cmd: TaskCommand) -> bool:
     if cmd.action == "done":
         await c.service.set_status(task, TaskStatus.done)
         await message.answer(f"✅ Готово: «{esc(task.title)}».")
+        for line in c.game.complete(task):
+            await message.answer(line)
     elif cmd.action == "start":
         await c.service.set_status(task, TaskStatus.in_progress)
         await message.answer(f"▶️ В работе: «{esc(task.title)}».")
