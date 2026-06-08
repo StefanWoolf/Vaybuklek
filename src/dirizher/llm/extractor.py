@@ -16,8 +16,9 @@ def build_provider(settings: Settings) -> LLMProvider:
     if provider == "groq":
         from .groq_provider import GroqLLMProvider
 
-        log.info("LLM-провайдер: Groq (%s)", settings.llm.groq_model)
-        return GroqLLMProvider(settings.llm.groq_api_key, settings.llm.groq_model)
+        keys = settings.llm.groq_key_list
+        log.info("LLM-провайдер: Groq (%s), ключей: %d", settings.llm.groq_model, len(keys))
+        return GroqLLMProvider(keys, settings.llm.groq_model)
     if provider == "gigachat":
         from .gigachat_provider import GigaChatLLMProvider
 

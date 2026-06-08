@@ -43,15 +43,28 @@ class LLMSettings(BaseSettings):
     ignore_threshold: float = 0.6
 
     groq_api_key: str = ""
+    # Доп. ключи Groq через запятую — ротация при достижении дневного лимита (429).
+    groq_api_keys: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
     gigachat_credentials: str = ""
     gigachat_scope: str = "GIGACHAT_API_PERS"
 
     @property
+    def groq_key_list(self) -> list[str]:
+        """Все ключи Groq (основной + дополнительные), без пустых и дублей."""
+        raw = [self.groq_api_key, *self.groq_api_keys.split(",")]
+        keys: list[str] = []
+        for k in raw:
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+        return keys
+
+    @property
     def effective_provider(self) -> str:
         """Провайдер с учётом наличия ключей — иначе откат в mock."""
-        if self.provider == "groq" and self.groq_api_key:
+        if self.provider == "groq" and self.groq_key_list:
             return "groq"
         if self.provider == "gigachat" and self.gigachat_credentials:
             return "gigachat"

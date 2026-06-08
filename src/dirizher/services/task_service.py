@@ -70,6 +70,10 @@ class TaskService:
         self.snapshot = snapshot
         self.repo = repo
         self.team = team
+        # Резервный извлекатель на случай недоступности LLM (лимит/сеть).
+        from ..llm.mock_provider import MockLLMProvider
+        self._fallback = MockLLMProvider()
+        self._llm_degraded = False  # True, если последний вызов LLM упал
 
     # ── Извлечение и классификация ───────────────────────────────────────────
     async def ingest(
@@ -87,7 +91,14 @@ class TaskService:
             memory_context=self.snapshot.context_for_llm(self.repo.all()),
             recent_dialog=history or [],
         )
-        extracted = await self.provider.extract_tasks(text, ctx)
+        try:
+            extracted = await self.provider.extract_tasks(text, ctx)
+        except Exception as e:  # noqa: BLE001  — лимит/сеть LLM не должны ронять бота
+            log.warning("LLM недоступен (%s) — откат на эвристику", type(e).__name__)
+            self._llm_degraded = True
+            extracted = await self._fallback.extract_tasks(text, ctx)
+        else:
+            self._llm_degraded = False
         log.info("Извлечено задач: %d (источник=%s)", len(extracted), source.source.value)
 
         thr = self.settings.llm.confidence_threshold

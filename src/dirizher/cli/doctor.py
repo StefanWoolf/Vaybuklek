@@ -44,24 +44,26 @@ def check_telegram(token: str) -> None:
 
 
 # ── Groq ─────────────────────────────────────────────────────────────────────
-def check_groq(key: str, model: str) -> None:
-    if not key:
+def check_groq(keys: list[str], model: str) -> None:
+    if not keys:
         _line(SKIP, "Groq", "ключ не задан")
         return
-    try:
-        r = httpx.get(
-            "https://api.groq.com/openai/v1/models",
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=20,
-        )
-        if r.status_code == 200:
-            ids = [m["id"] for m in r.json().get("data", [])]
-            has = "есть" if model in ids else "НЕ найдена в списке"
-            _line(OK, "Groq", f"ключ рабочий; модель {model} — {has}")
-        else:
-            _line(FAIL, "Groq", f"HTTP {r.status_code}: {r.text[:120]}")
-    except Exception as e:  # noqa: BLE001
-        _line(FAIL, "Groq", f"ошибка: {e}")
+    ok = 0
+    for i, key in enumerate(keys, 1):
+        try:
+            r = httpx.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=20,
+            )
+            if r.status_code == 200:
+                ok += 1
+            else:
+                _line(FAIL, "Groq", f"ключ #{i}: HTTP {r.status_code}: {r.text[:80]}")
+        except Exception as e:  # noqa: BLE001
+            _line(FAIL, "Groq", f"ключ #{i}: ошибка: {e}")
+    if ok:
+        _line(OK, "Groq", f"рабочих ключей: {ok}/{len(keys)}; модель {model}; ротация при лимите")
 
 
 # ── GigaChat ─────────────────────────────────────────────────────────────────
@@ -153,7 +155,7 @@ def main() -> None:
     print("\n🩺 Дирижёр · проверка боевых ключей\n")
     print(f"  Текущие режимы: {s.mode_banner()}\n")
     check_telegram(s.telegram.bot_token)
-    check_groq(s.llm.groq_api_key, s.llm.groq_model)
+    check_groq(s.llm.groq_key_list, s.llm.groq_model)
     check_gigachat(s.llm.gigachat_credentials, s.llm.gigachat_scope)
     check_yougile(s.yougile.api_key, s.yougile.base_url)
     print(

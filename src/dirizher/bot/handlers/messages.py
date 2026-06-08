@@ -13,6 +13,7 @@ from aiogram.types import Message
 from ...container import AppContainer
 from ...domain.enums import TaskSource
 from ...domain.models import SourceRef, TeamMember
+from ...llm.prefilter import looks_taskish
 from ...logging_setup import get_logger
 from .. import task_commands
 from ..flow import present
@@ -32,6 +33,18 @@ def _author(user) -> str:
     if user is None:
         return "—"
     return user.full_name or (f"@{user.username}" if user.username else "участник")
+
+
+def _team_names(c: AppContainer) -> tuple[str, ...]:
+    """Имена/алиасы/username команды — для предфильтра (поручение участнику)."""
+    names: list[str] = []
+    for m in c.team.all():
+        if m.username:
+            names.append(m.username)
+        if m.full_name:
+            names.append(m.full_name.split()[0])
+        names.extend(m.aliases)
+    return tuple(names)
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -57,13 +70,18 @@ async def on_text(message: Message, c: AppContainer, state: FSMContext) -> None:
         await task_commands.handle(message, c, cmd)
         return
 
+    # Предфильтр: на заведомый мусор (приветствия/реакции/короткие вопросы) не
+    # тратим вызов LLM. При любом намёке на задачу — пропускаем дальше.
+    if not looks_taskish(text, _team_names(c)):
+        return
+
     source = SourceRef(
         source=TaskSource.chat,
         chat_id=chat_id,
         message_id=message.message_id,
         excerpt=text[:200],
     )
-    history = c.history.recent(chat_id, limit=12)
+    history = c.history.recent(chat_id, limit=10)
     processed = await c.service.ingest(text, source, history=history)
 
     if processed:
